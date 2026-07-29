@@ -464,7 +464,7 @@ function setStatus(html){ $('status').innerHTML=html; }
 const TRANSPORT_SPEED_PXPS = 40;     // 움직이는 동안의 가정 속도 (px/sec, 지도 스케일 기준 튜닝값)
 const TURN_ANGLE_THRESHOLD = 28;     // 이 각도(도) 이상 방향이 바뀌면 "회전"으로 판정
 const TURN_MIN_INTERVAL_MS = 1200;   // 연속 오검출 방지용 최소 간격
-const MOTION_THRESHOLD = 1.4;        // 이 값 이상의 흔들림 에너지(m/s^2)면 "움직이는 중" (손떨림 등에 덜 반응하도록 상향)
+const MOTION_THRESHOLD = 1.0;        // 이 값 이상의 흔들림 에너지(m/s^2)면 "움직이는 중" (0.7→너무 예민, 1.4→너무 둔감, 그 사이로 조정)
 const MOTION_STOP_DELAY_MS = 600;    // 흔들림이 멈춘 뒤 이 시간 지나야 "정지"로 판정 (순간 끊김 방지)
 
 let transportActive=false, transportRAF=null;
