@@ -454,19 +454,26 @@ function placeDest(){
 }
 function setStatus(html){ $('status').innerHTML=html; }
 
-/* ════════ 이송 시뮬레이션 (평균속도 애니메이션 + 자이로 회전보정) ════════
-   실제 GPS/비콘 없이도 데모 가능하게: 정해진 경로를 가정 속도로 따라가며
-   애니메이션하고, 폰의 방향센서(자이로)로 "실제로 꺾었다"를 감지하면
-   경로상 다음 회전 지점으로 위치를 스냅해 보정한다. ════════ */
-const TRANSPORT_SPEED_PXPS = 40;     // 가정 이동 속도 (px/sec, 지도 스케일 기준 튜닝값)
+/* ════════ 이송 시뮬레이션 (실제 움직임 감지 + 자이로 회전보정) ════════
+   자이로(방향센서)는 "어느 쪽을 보고 있나"만 알려줄 뿐 "움직이는 중인가"는
+   알려주지 않는다. "움직일 때만 전진"하려면 가속도계(accelerometer)로
+   흔들림/진동 에너지를 측정해서 움직임 여부를 판정해야 한다.
+   → 가속도계로 움직임 유무 감지(정지해 있으면 점도 멈춤) +
+     가정 속도로 전진(움직이는 동안만) +
+     자이로로 실제 회전을 감지하면 경로상 다음 회전 지점으로 스냅 보정. ════════ */
+const TRANSPORT_SPEED_PXPS = 40;     // 움직이는 동안의 가정 속도 (px/sec, 지도 스케일 기준 튜닝값)
 const TURN_ANGLE_THRESHOLD = 28;     // 이 각도(도) 이상 방향이 바뀌면 "회전"으로 판정
 const TURN_MIN_INTERVAL_MS = 1200;   // 연속 오검출 방지용 최소 간격
+const MOTION_THRESHOLD = 0.7;        // 이 값 이상의 흔들림 에너지(m/s^2)면 "움직이는 중"
+const MOTION_STOP_DELAY_MS = 600;    // 흔들림이 멈춘 뒤 이 시간 지나야 "정지"로 판정 (순간 끊김 방지)
 
 let transportActive=false, transportRAF=null;
 let transportSegLens=[], transportCum=[0], transportTotal=0, transportTurns=[];
-let transportSnapDist=0, transportSnapTime=0;
+let transportDist=0, lastFrameTime=null;
 let lastHeading=null, lastTurnTime=0;
-let gyroHandler=null;
+let gyroHandler=null, motionHandler=null;
+let isMoving=false, lastMotionTime=0, motionEnergy=0;
+let gravityEst=null;
 
 function buildTransportModel(pts){
   transportSegLens=[]; transportCum=[0]; transportTurns=[];
@@ -500,28 +507,30 @@ function transportPointAt(dist){
   }
   return pts[pts.length-1];
 }
-function transportTick(){
+function transportTick(now){
   if(!transportActive) return;
-  const now=performance.now();
-  const dist=Math.min(transportTotal, transportSnapDist+(now-transportSnapTime)/1000*TRANSPORT_SPEED_PXPS);
-  const p=transportPointAt(dist);
+  if(lastFrameTime==null) lastFrameTime=now;
+  const dt=(now-lastFrameTime)/1000;
+  lastFrameTime=now;
+  if(motionHandler && now-lastMotionTime>MOTION_STOP_DELAY_MS) isMoving=false;
+  if(isMoving || !motionHandler){   // 가속도계가 아예 없으면 감지 없이 그냥 전진(폴백)
+    transportDist=Math.min(transportTotal, transportDist+dt*TRANSPORT_SPEED_PXPS);
+  }
+  const p=transportPointAt(transportDist);
   $('meDot').style.display='';
   $('meDot').setAttribute('transform',`translate(${p.x},${p.y})`);
-  const pct = transportTotal>0 ? Math.round(dist/transportTotal*100) : 100;
-  const gyroNote = gyroHandler ? '' : ' (센서 없이 속도 추정만)';
-  $('transportStatus').textContent = `🚶 이동 중... ${pct}%${gyroNote}`;
-  if(dist>=transportTotal){ finishTransport(); return; }
+  const pct = transportTotal>0 ? Math.round(transportDist/transportTotal*100) : 100;
+  const moveNote = !motionHandler ? ' (센서 없이 속도 추정만)' : (isMoving ? '' : ' — 정지 중');
+  $('transportStatus').textContent = `🚶 이동 중... ${pct}%${moveNote}`;
+  if(transportDist>=transportTotal){ finishTransport(); return; }
   transportRAF=requestAnimationFrame(transportTick);
 }
 function handleTurnDetected(){
   if(!transportActive) return;
-  const now=performance.now();
-  const curDist=transportSnapDist+(now-transportSnapTime)/1000*TRANSPORT_SPEED_PXPS;
   let target=null;
-  for(const t of transportTurns){ if(t.cumDist > curDist-15){ target=t; break; } }
+  for(const t of transportTurns){ if(t.cumDist > transportDist-15){ target=t; break; } }
   if(target){
-    transportSnapDist=target.cumDist;
-    transportSnapTime=now;
+    transportDist=target.cumDist;
     $('transportStatus').textContent = `↪ 회전 감지 — 위치 보정됨 (${Math.round(target.cumDist/transportTotal*100)}%)`;
   }
 }
@@ -539,32 +548,48 @@ function onDeviceOrientation(e){
   }
   lastHeading=heading;
 }
+function onDeviceMotion(e){
+  const a=e.accelerationIncludingGravity;
+  if(!a || a.x==null) return;
+  if(!gravityEst) gravityEst={x:a.x,y:a.y,z:a.z};
+  const ALPHA=0.9;
+  gravityEst.x=ALPHA*gravityEst.x+(1-ALPHA)*a.x;
+  gravityEst.y=ALPHA*gravityEst.y+(1-ALPHA)*a.y;
+  gravityEst.z=ALPHA*gravityEst.z+(1-ALPHA)*a.z;
+  const dx=a.x-gravityEst.x, dy=a.y-gravityEst.y, dz=a.z-gravityEst.z;
+  const mag=Math.sqrt(dx*dx+dy*dy+dz*dz);
+  motionEnergy = motionEnergy*0.8 + mag*0.2;
+  if(motionEnergy > MOTION_THRESHOLD){
+    isMoving=true;
+    lastMotionTime=performance.now();
+  }
+}
 async function startTransport(){
   if(!lastRoutePts || lastRoutePts.length<2) return;
   buildTransportModel(lastRoutePts);
   transportActive=true;
-  transportSnapDist=0; transportSnapTime=performance.now();
+  transportDist=0; lastFrameTime=null;
   lastHeading=null; lastTurnTime=0;
+  isMoving=false; lastMotionTime=0; motionEnergy=0; gravityEst=null;
   $('startTransportBtn').style.display='none';
   $('stopTransportBtn').style.display='';
-  $('transportStatus').textContent='🚶 이동 중... 0%';
+  $('transportStatus').textContent='🚶 대기 중... (움직이면 시작됩니다)';
   try{
-    if(typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function'){
-      const res = await DeviceOrientationEvent.requestPermission();
-      if(res==='granted'){
-        gyroHandler=onDeviceOrientation;
-        window.addEventListener('deviceorientation', gyroHandler, true);
-      } else {
-        $('transportStatus').textContent += ' (센서 권한 거부됨)';
-      }
-    } else if(window.DeviceOrientationEvent){
-      gyroHandler=onDeviceOrientation;
-      window.addEventListener('deviceorientation', gyroHandler, true);
-    } else {
-      $('transportStatus').textContent += ' (이 브라우저는 방향센서 미지원)';
+    if(typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function'){
+      const res = await DeviceMotionEvent.requestPermission();
+      if(res==='granted'){ motionHandler=onDeviceMotion; window.addEventListener('devicemotion', motionHandler, true); }
+    } else if(window.DeviceMotionEvent){
+      motionHandler=onDeviceMotion; window.addEventListener('devicemotion', motionHandler, true);
     }
+    if(typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function'){
+      const res2 = await DeviceOrientationEvent.requestPermission();
+      if(res2==='granted'){ gyroHandler=onDeviceOrientation; window.addEventListener('deviceorientation', gyroHandler, true); }
+    } else if(window.DeviceOrientationEvent){
+      gyroHandler=onDeviceOrientation; window.addEventListener('deviceorientation', gyroHandler, true);
+    }
+    if(!motionHandler) $('transportStatus').textContent = '🚶 이동 중... 0% (센서 미지원/거부 — 속도 추정만)';
   }catch(err){
-    $('transportStatus').textContent += ' (센서 사용 불가)';
+    $('transportStatus').textContent = '🚶 이동 중... 0% (센서 사용 불가 — 속도 추정만)';
   }
   transportRAF=requestAnimationFrame(transportTick);
 }
@@ -573,6 +598,7 @@ function stopTransport(){
   if(transportRAF) cancelAnimationFrame(transportRAF);
   transportRAF=null;
   if(gyroHandler){ window.removeEventListener('deviceorientation', gyroHandler, true); gyroHandler=null; }
+  if(motionHandler){ window.removeEventListener('devicemotion', motionHandler, true); motionHandler=null; }
   $('startTransportBtn').style.display = lastRoutePts ? '' : 'none';
   $('stopTransportBtn').style.display='none';
   $('transportStatus').textContent='';
