@@ -491,10 +491,14 @@ const MIN_TRAVEL_BEFORE_ARRIVE_PX = 60;  // 출발지가 우연히 목적지 근
 const MIN_LEG_MS = 3000;                 // 각 구간(출발→엘리베이터, 엘리베이터→목적지)마다 최소 이 시간은 지나야 도착 판정 시작
 const DWELL_RADIUS_PX = 55;              // 목표가 아닌 엘리베이터로부터 이 거리 이내
 const DWELL_MS = 3000;                   // 이 시간 이상 머무르면 "그 엘리베이터를 탔다"고 보고 목표 변경
+const ELEVATOR_EXIT_ENERGY = 1.8;        // 평소 이동판정(MOTION_THRESHOLD=1.0)보다 높게 잡아, 엘리베이터 흔들림/진동으로는 안 넘도록
+const ELEVATOR_EXIT_MOVE_MS = 1200;      // 이 시간 이상 연속으로 강한 움직임이 있어야 "내려서 걷기 시작"으로 판단
+const ELEVATOR_NO_SENSOR_FALLBACK_MS = 2500; // 센서가 없는 경우의 폴백 대기 시간
 
 let transportActive=false, transportRAF=null, lastFrameTime=null;
 let freeX=0, freeY=0, estHeadingRad=0, traveledDist=0, legStartTime=0;
 let dwellCandidateId=null, dwellStartTime=0;
+let elevatorPhaseStart=0, elevatorMoveStartTime=0;
 let lastHeading=null, lastTurnTime=0, lastOrientTime=0, headingRateDegPerSec=0;
 let gyroHandler=null, motionHandler=null;
 let isMoving=false, lastMotionTime=0, motionEnergy=0;
@@ -511,7 +515,24 @@ function updateRouteLineFrom(pointA, destP){
 }
 function transportTick(now){
   if(!transportActive) return;
-  if(transportInElevator){ transportRAF=requestAnimationFrame(transportTick); return; }
+  if(transportInElevator){
+    // 층수를 하나하나 안내하지 않고 목적지 층으로 바로 "이동 중"만 표시하다가,
+    // 실제로 다시 걷기 시작한 게 감지되면(=엘리베이터에서 내렸다고 판단) 그 층 지도를 보여준다.
+    // 미세한 흔들림(엘리베이터 정지/진동 등)으로 오판하지 않도록, 평소 이동 판정보다
+    // 더 큰 흔들림이 더 오래 지속돼야만 "내렸다"고 인정한다.
+    if(motionHandler){
+      if(motionEnergy > ELEVATOR_EXIT_ENERGY){
+        if(elevatorMoveStartTime===0) elevatorMoveStartTime=now;
+        if(now-elevatorMoveStartTime >= ELEVATOR_EXIT_MOVE_MS){ completeElevatorArrival(); return; }
+      } else {
+        elevatorMoveStartTime=0;
+      }
+    } else if(now-elevatorPhaseStart >= ELEVATOR_NO_SENSOR_FALLBACK_MS){
+      completeElevatorArrival(); return;   // 센서가 없으면 감지 자체가 불가능하니 일정 시간 후 진행
+    }
+    transportRAF=requestAnimationFrame(transportTick);
+    return;
+  }
   if(lastFrameTime==null) lastFrameTime=now;
   const dt=(now-lastFrameTime)/1000;
   lastFrameTime=now;
@@ -562,43 +583,31 @@ function transportTick(now){
 }
 function beginElevatorLeg(){
   transportInElevator=true;
+  elevatorPhaseStart=performance.now();
+  elevatorMoveStartTime=0;
   $('destPin').style.display='none';
+  $('transportStatus').textContent = `🛗 ${FLOORS_DATA[endFloor].label}(으)로 이동 중...`;
+}
+function completeElevatorArrival(){
   const destFloor=endFloor;
-  const curIdx=FLOOR_ORDER.indexOf(currentFloor);
-  const dstIdx=FLOOR_ORDER.indexOf(destFloor);
-  const step=curIdx<dstIdx?1:-1;
-  const seq=[];
-  for(let i=curIdx;i!==dstIdx;i+=step) seq.push(FLOOR_ORDER[i]);
-  seq.push(destFloor);
-  let i=0;
-  $('transportStatus').textContent = `🛗 ${FLOORS_DATA[seq[0]].label}에서 이동 중...`;
-  const stepMs = 700;   // 층마다 고정 시간 — 층 수가 많아도 각 층 표시가 눈에 보이도록 (총 시간을 나눠쓰지 않음)
-  const timer=setInterval(()=>{
-    i++;
-    if(i>=seq.length){
-      clearInterval(timer);
-      loadFloor(destFloor, {keepSelection:true});
-      transportNeedsElevator=false;
-      transportTargetId=endId;
-      const elevId=findElevatorId();
-      const startP = elevId ? px(L[elevId]) : {x:IW/2, y:IH/2};
-      freeX=startP.x; freeY=startP.y;
-      const destP=px(L[endId]);
-      estHeadingRad=Math.atan2(destP.y-freeY, destP.x-freeX);
-      lastFrameTime=null;
-      traveledDist=0;
-      legStartTime=performance.now(); dwellCandidateId=null; dwellStartTime=0;
-      isMoving=false; lastMotionTime=0; motionEnergy=0;
-      $('meDot').style.display='';
-      $('meDot').setAttribute('transform',`translate(${freeX},${freeY})`);
-      updateRouteLineFrom({x:freeX,y:freeY}, destP);
-      placeDest();
-      transportInElevator=false;
-      transportRAF=requestAnimationFrame(transportTick);
-      return;
-    }
-    $('transportStatus').textContent = `🛗 ${FLOORS_DATA[seq[i]].label}로 이동 중...`;
-  }, stepMs);
+  loadFloor(destFloor, {keepSelection:true});
+  transportNeedsElevator=false;
+  transportTargetId=endId;
+  const elevId=findElevatorId();
+  const startP = elevId ? px(L[elevId]) : {x:IW/2, y:IH/2};
+  freeX=startP.x; freeY=startP.y;
+  const destP=px(L[endId]);
+  estHeadingRad=Math.atan2(destP.y-freeY, destP.x-freeX);
+  lastFrameTime=null;
+  traveledDist=0;
+  legStartTime=performance.now(); dwellCandidateId=null; dwellStartTime=0;
+  isMoving=false; lastMotionTime=0; motionEnergy=0;
+  $('meDot').style.display='';
+  $('meDot').setAttribute('transform',`translate(${freeX},${freeY})`);
+  updateRouteLineFrom({x:freeX,y:freeY}, destP);
+  placeDest();
+  transportInElevator=false;
+  transportRAF=requestAnimationFrame(transportTick);
 }
 function snapHeadingTo90(){
   const deg=estHeadingRad*180/Math.PI;
