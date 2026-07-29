@@ -480,10 +480,11 @@ const MOTION_STOP_DELAY_MS = 350;    // 흔들림이 멈춘 뒤 이 시간 지�
 const ROTATION_SUPPRESS_DEGPS = 70;  // 이 각속도(도/초) 이상으로 "회전 중"이면 그 순간의 가속도는 이동판정에 반영 안 함
 const ARRIVE_DIST_PX = 16;           // 목적지와 이 거리(px) 이내면 도착 처리
 const ELEV_ARRIVE_DIST_PX = 22;      // 엘리베이터 위치와 이 거리 이내면 "탑승"으로 판정
-const MIN_TRAVEL_BEFORE_ARRIVE_PX = 35; // 출발지가 우연히 목적지 근처라도 "즉시 도착" 안 되도록, 최소 이 거리는 실제로 이동해야 도착 판정 시작
+const MIN_TRAVEL_BEFORE_ARRIVE_PX = 60;  // 출발지가 우연히 목적지 근처라도 "즉시 도착" 안 되도록, 최소 이 거리는 실제로 이동해야 도착 판정 시작
+const MIN_LEG_MS = 3000;                 // 각 구간(출발→엘리베이터, 엘리베이터→목적지)마다 최소 이 시간은 지나야 도착 판정 시작
 
 let transportActive=false, transportRAF=null, lastFrameTime=null;
-let freeX=0, freeY=0, estHeadingRad=0, traveledDist=0;
+let freeX=0, freeY=0, estHeadingRad=0, traveledDist=0, legStartTime=0;
 let lastHeading=null, lastTurnTime=0;
 let gyroHandler=null, motionHandler=null;
 let isMoving=false, lastMotionTime=0, motionEnergy=0;
@@ -521,7 +522,8 @@ function transportTick(now){
   const legNote = transportNeedsElevator ? ' (엘리베이터로 이동 중)' : '';
   $('transportStatus').textContent = `🚶 이동 중...${moveNote}${legNote}`;
   const arriveThresh = transportNeedsElevator ? ELEV_ARRIVE_DIST_PX : ARRIVE_DIST_PX;
-  if(traveledDist >= MIN_TRAVEL_BEFORE_ARRIVE_PX && distLeft <= arriveThresh){
+  const legReady = traveledDist >= MIN_TRAVEL_BEFORE_ARRIVE_PX && (now-legStartTime) >= MIN_LEG_MS;
+  if(legReady && distLeft <= arriveThresh){
     if(transportNeedsElevator){ beginElevatorLeg(); return; }
     finishTransport();
     return;
@@ -555,6 +557,7 @@ function beginElevatorLeg(){
       estHeadingRad=Math.atan2(destP.y-freeY, destP.x-freeX);
       lastFrameTime=null;
       traveledDist=0;
+      legStartTime=performance.now();
       isMoving=false; lastMotionTime=0; motionEnergy=0;
       $('meDot').style.display='';
       $('meDot').setAttribute('transform',`translate(${freeX},${freeY})`);
@@ -622,6 +625,7 @@ async function startTransport(){
   transportInElevator=false;
   lastFrameTime=null;
   traveledDist=0;
+  legStartTime=performance.now();
   freeX=lastRoutePts[0].x; freeY=lastRoutePts[0].y;
   estHeadingRad=Math.atan2(lastRoutePts[1].y-lastRoutePts[0].y, lastRoutePts[1].x-lastRoutePts[0].x);
   lastHeading=null; lastTurnTime=0;
@@ -677,6 +681,9 @@ $('stopTransportBtn').addEventListener('click', ()=>{ stopTransport(); placeMe()
 
 /* ── 렌더 전체 ── */
 function renderAll(){
+  // 이송(추측항법) 진행 중엔 meDot 위치를 transportTick이 직접 관리하므로,
+  // 층 이미지 로드 완료 때마다 걸리는 이 콜백이 startId 기준 위치로 되돌려버리면 안 된다.
+  if(transportActive) return;
   if(startId) placeMe();
   if(calMode) renderCal();
 }
