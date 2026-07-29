@@ -310,9 +310,9 @@ function loadFloor(key, opts){
     startId='';
     endFloor=''; endId='';
     $('endSel').value='';
+    clearRoute();          // stopTransport()까지 정지시키므로, 이송 중 층전환(keepSelection)일 땐 호출하지 않는다
+    $('meDot').style.display='none';
   }
-  clearRoute();
-  $('meDot').style.display='none';
   $('floorBadge').textContent = key;
   $('mapTitle').textContent = `본관 ${CAL.label} (공식 원내지도)`;
   img.alt = `본관 ${CAL.label} 원내지도`;
@@ -480,9 +480,10 @@ const MOTION_STOP_DELAY_MS = 350;    // 흔들림이 멈춘 뒤 이 시간 지�
 const ROTATION_SUPPRESS_DEGPS = 70;  // 이 각속도(도/초) 이상으로 "회전 중"이면 그 순간의 가속도는 이동판정에 반영 안 함
 const ARRIVE_DIST_PX = 16;           // 목적지와 이 거리(px) 이내면 도착 처리
 const ELEV_ARRIVE_DIST_PX = 22;      // 엘리베이터 위치와 이 거리 이내면 "탑승"으로 판정
+const MIN_TRAVEL_BEFORE_ARRIVE_PX = 35; // 출발지가 우연히 목적지 근처라도 "즉시 도착" 안 되도록, 최소 이 거리는 실제로 이동해야 도착 판정 시작
 
 let transportActive=false, transportRAF=null, lastFrameTime=null;
-let freeX=0, freeY=0, estHeadingRad=0;
+let freeX=0, freeY=0, estHeadingRad=0, traveledDist=0;
 let lastHeading=null, lastTurnTime=0;
 let gyroHandler=null, motionHandler=null;
 let isMoving=false, lastMotionTime=0, motionEnergy=0;
@@ -505,8 +506,10 @@ function transportTick(now){
   lastFrameTime=now;
   if(motionHandler && now-lastMotionTime>MOTION_STOP_DELAY_MS) isMoving=false;
   if(isMoving || !motionHandler){   // 가속도계가 아예 없으면 감지 없이 그냥 전진(폴백)
-    freeX += Math.cos(estHeadingRad)*TRANSPORT_SPEED_PXPS*dt;
-    freeY += Math.sin(estHeadingRad)*TRANSPORT_SPEED_PXPS*dt;
+    const step=TRANSPORT_SPEED_PXPS*dt;
+    freeX += Math.cos(estHeadingRad)*step;
+    freeY += Math.sin(estHeadingRad)*step;
+    traveledDist += step;
   }
   const p={x:freeX, y:freeY};
   $('meDot').style.display='';
@@ -518,7 +521,7 @@ function transportTick(now){
   const legNote = transportNeedsElevator ? ' (엘리베이터로 이동 중)' : '';
   $('transportStatus').textContent = `🚶 이동 중...${moveNote}${legNote}`;
   const arriveThresh = transportNeedsElevator ? ELEV_ARRIVE_DIST_PX : ARRIVE_DIST_PX;
-  if(distLeft <= arriveThresh){
+  if(traveledDist >= MIN_TRAVEL_BEFORE_ARRIVE_PX && distLeft <= arriveThresh){
     if(transportNeedsElevator){ beginElevatorLeg(); return; }
     finishTransport();
     return;
@@ -551,6 +554,7 @@ function beginElevatorLeg(){
       const destP=px(L[endId]);
       estHeadingRad=Math.atan2(destP.y-freeY, destP.x-freeX);
       lastFrameTime=null;
+      traveledDist=0;
       isMoving=false; lastMotionTime=0; motionEnergy=0;
       $('meDot').style.display='';
       $('meDot').setAttribute('transform',`translate(${freeX},${freeY})`);
@@ -617,6 +621,7 @@ async function startTransport(){
   transportActive=true;
   transportInElevator=false;
   lastFrameTime=null;
+  traveledDist=0;
   freeX=lastRoutePts[0].x; freeY=lastRoutePts[0].y;
   estHeadingRad=Math.atan2(lastRoutePts[1].y-lastRoutePts[0].y, lastRoutePts[1].x-lastRoutePts[0].x);
   lastHeading=null; lastTurnTime=0;
