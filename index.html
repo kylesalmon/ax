@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>SMC 원내 길찾기 · 본관 1F</title>
+<title>SMC 원내 길찾기 · 본관</title>
 <style>
   :root{
     --ink:#12263a; --ink-soft:#41586f;
@@ -106,13 +106,17 @@
 
 <header>
   <h1>원내 길찾기 · 본관</h1>
-  <span class="floor-badge">1F</span>
+  <span class="floor-badge" id="floorBadge">1F</span>
   <span class="sub">삼성서울병원 공식 원내지도 기반 · AX 프로그램용</span>
 </header>
 
 <div class="wrap">
 
   <div class="controls">
+    <div class="field" style="min-width:150px; flex:0 0 150px">
+      <label for="floorSel">층</label>
+      <select id="floorSel"></select>
+    </div>
     <div class="field">
       <label for="startSel"><span class="dot red"></span>현재 위치</label>
       <select id="startSel"></select>
@@ -137,11 +141,10 @@
       </div>
     </div>
     <div class="map-stage" id="stage">
-      <img id="mapImg" alt="본관 1층 원내지도" draggable="false">
+      <img id="mapImg" alt="본관 원내지도" draggable="false">
       <div id="imgError">
         지도 이미지를 불러오지 못했습니다.<br>
-        인터넷 연결을 확인하거나, 병원에서 받은 지도 PNG 파일을 이 HTML과 <b>같은 폴더</b>에
-        <code>map_hmain_01.png</code> 이름으로 넣어 주세요. (파일 상단 <code>FLOOR.imgCandidates</code>에서 경로 변경 가능)
+        인터넷 연결을 확인하거나, <code>floors/</code> 폴더에 해당 층 이미지 파일이 있는지 확인해 주세요.
       </div>
       <svg id="overlay" preserveAspectRatio="none">
         <polyline id="corLine" class="cor-line" style="display:none"/>
@@ -164,12 +167,13 @@
 
   <!-- ── 보정 패널 ── -->
   <div class="cal-panel" id="calPanel">
-    <h2>위치 보정 모드</h2>
+    <h2>위치 보정 모드 <span id="calFloorLabel" style="font-size:12px;font-weight:400;color:var(--ink-soft)"></span></h2>
     <p>
       <b>위치 지정</b>: 아래에서 시설을 고른 뒤 지도의 실제 위치를 클릭하세요. 파란 점은 드래그로 미세 조정할 수 있습니다.
       회색 점은 아직 좌표가 확정되지 않은(추정) 시설입니다.<br>
       <b>복도 경로</b>: 경로선이 지나갈 복도 중심선을 순서대로 클릭해 찍습니다. 경로는 항상 이 선을 따라 그려집니다.<br>
-      보정이 끝나면 <b>좌표 JSON 복사</b> → 이 HTML 파일의 <code>/* ▼▼ CALIBRATION DATA ▼▼ */</code> 블록에 붙여넣으면 영구 반영됩니다.
+      보정은 <b>현재 선택된 층</b>에만 적용됩니다. 보정이 끝나면 <b>좌표 JSON 복사</b> → 이 HTML 파일의
+      <code>FLOORS_DATA</code> 객체에서 해당 층 키(예: <code>"1F"</code>)의 값에 붙여넣으면 영구 반영됩니다.
     </p>
     <div class="cal-row">
       <div class="cal-mode">
@@ -189,72 +193,23 @@
 
   <p class="notice">
     ※ 지도 이미지 © 삼성서울병원 — 병원 승인 하에 원내 AX 프로그램 용도로 사용.
-    시설 초기 좌표는 공식 안내 페이지의 배치 설명을 기반으로 한 추정값이므로, 배포 전 보정 모드에서 실제 지도에 맞게 확정하세요.
+    좌표는 삼성서울병원 공식 원내 안내 페이지(병원둘러보기)의 좌표 데이터를 기반으로 자동 반영했습니다.
+    일부 층(주로 병동 전용층)은 공식 페이지에 시설별 좌표가 없어 <b>*</b> 표시된 미확정 상태이며, 보정 모드에서 직접 확정할 수 있습니다.
   </p>
 </div>
 
 <script>
 /* ════════════════════════════════════════════════════════════════
-   ▼▼ CALIBRATION DATA ▼▼
-   보정 모드에서 "좌표 JSON 복사"로 얻은 내용을 아래 CAL 객체에
+   ▼▼ FLOOR DATA (본관 B3F~20F) ▼▼
+   삼성서울병원 공식 "병원둘러보기" 페이지에서 자동 수집한 층별 좌표 데이터.
+   보정 모드에서 "좌표 JSON 복사"로 얻은 내용을 해당 층 키의 값에
    그대로 붙여넣으면 다음 실행부터 영구 반영됩니다.
-   - locations: { id: {name, x, y, set} }  (x,y는 이미지 크기 대비 %)
-   - corridor : [ {x,y}, ... ]             (경로선이 따라갈 복도 중심선)
+   - locations: { 번호: {name, x, y, set} }  (x,y는 이미지 크기 대비 %, set=좌표 확정 여부)
+   - corridor : [ {x,y}, ... ]                  (경로선이 따라갈 복도 중심선)
    ════════════════════════════════════════════════════════════════ */
-const CAL = {
-  "locations": {
-    "gate1":  {"name":"게이트1 (서측 출입구)",              "x":10.58,"y":54.64,"set":true},
-    "info":   {"name":"안내 (Information)",                 "x":30.16,"y":62.05,"set":true},
-    "elevW":  {"name":"외래 엘리베이터",                      "x":40.95,"y":45.22,"set":true},
-    "first":  {"name":"첫 진료상담",                          "x":25.93,"y":83.17,"set":true},
-    "gate3":  {"name":"게이트3 (북측 출입구)",                "x":44.55,"y":3.57, "set":true},
-    "proton": {"name":"양성자치료센터 연결통로 (지하)",        "x":50.69,"y":44.22,"set":true},
-    "inj":    {"name":"외래치료실 (주사실)",                  "x":50.79,"y":30.67,"set":true},
-    "imgop":  {"name":"영상운영실",                           "x":50.79,"y":8.84, "set":true},
-    "xray":   {"name":"방사선검사실 (X-ray)",                 "x":60.11,"y":29.24,"set":true},
-    "ct":     {"name":"CT 검사실",                            "x":79.89,"y":36.38,"set":true},
-    "fluoro": {"name":"투시 조영실",                          "x":68.78,"y":29.24,"set":true},
-    "angio":  {"name":"혈관 조영실",                          "x":83.92,"y":18.26,"set":true},
-    "mri":    {"name":"MRI실",                               "x":90.48,"y":36.38,"set":true},
-    "annex":  {"name":"본관-별관 연결통로",                    "x":83.92,"y":56.78,"set":true},
-    "npw":    {"name":"음압병동",                             "x":87.83,"y":75.18,"set":true},
-    "er":     {"name":"응급실",                               "x":70.79,"y":75.18,"set":true},
-    "gate2":  {"name":"게이트2 (동측 출입구)",                "x":55.56,"y":90.58,"set":true},
-    "elevE":  {"name":"병동 엘리베이터",                       "x":53.44,"y":77.75,"set":true},
-    "elevMri":{"name":"지하3층 MRI실 전용 엘리베이터",         "x":53.44,"y":70.61,"set":true},
-    "esc":    {"name":"에스컬레이터",                          "x":54.29,"y":54.64,"set":true},
-    "cafe":   {"name":"커피숍 아띠제",                         "x":45.50,"y":61.63,"set":true},
-    "pay1":   {"name":"원무수납 1",                            "x":48.68,"y":73.90,"set":true},
-    "pay2":   {"name":"원무수납 2",                            "x":21.16,"y":36.81,"set":true},
-    "diab":   {"name":"당뇨병센터·내분비대사내과·갑상선센터",   "x":42.33,"y":86.73,"set":true},
-    "diabLab":{"name":"당뇨검사실",                            "x":38.62,"y":79.60,"set":true},
-    "diabEdu":{"name":"당뇨교육실",                            "x":31.75,"y":79.60,"set":true},
-    "pharm":  {"name":"외래약국",                              "x":48.15,"y":18.12,"set":true},
-    "blood":  {"name":"혈당검사실",                            "x":19.58,"y":83.17,"set":true},
-    "refer":  {"name":"회송상담 / 파트너즈센터",               "x":14.81,"y":69.90,"set":true},
-    "record": {"name":"의무기록 / 영상CD 복사창구",            "x":11.64,"y":61.06,"set":true},
-    "cdc":    {"name":"감염병센터 (CDC)",                      "x":43.28,"y":97.43,"set":true},
-    "im":     {"name":"내과 (감염·류마티스·신장·알레르기·호흡기)","x":21.16,"y":25.68,"set":true},
-    "cast":   {"name":"석고실",                                "x":31.75,"y":5.99, "set":true},
-    "sports": {"name":"스포츠의학실",                          "x":33.86,"y":29.53,"set":true},
-    "otc":    {"name":"장기이식센터",                          "x":21.16,"y":9.27, "set":true},
-    "ortho":  {"name":"정형외과 | 척추센터",                    "x":36.30,"y":20.11,"set":true},
-    "senior": {"name":"SMC 시니어 라운지",                     "x":31.75,"y":73.90,"set":true}
-  },
-  "corridor": [
-    {"x":8,"y":55},{"x":90,"y":55}
-  ]
-};
-/* ════════ ▲▲ CALIBRATION DATA ▲▲ ════════ */
-
-const FLOOR = {
-  key:'1F',
-  title:'본관 1층 (공식 원내지도)',
-  imgCandidates:[
-    'map_hmain_01.png',   // 로컬 파일 우선 (같은 폴더에 두면 오프라인 동작)
-    "http://www.samsunghospital.com/_newhome/ui/home/static/img/info/guide/map/map_hmain_01.png?ver='21'"
-  ]
-};
+const FLOORS_DATA = {"B3F":{"label":"지하 3층","img":"floors/B3F.jpg","remote":"https://www.samsunghospital.com/_newhome/ui/home/static/img/hospital/guide/hospital/B3F/hospital-B3F-0.jpg","corridor":[{"x":8,"y":50},{"x":92,"y":50}],"locations":{"01":{"name":"감마나이프센터","x":28.61,"y":39.15,"set":true},"02":{"name":"MRI촬영실","x":22.86,"y":44.1,"set":true}}},"B2F":{"label":"지하 2층","img":"floors/B2F.jpg","remote":"https://www.samsunghospital.com/_newhome/ui/home/static/img/hospital/guide/hospital/B2F/hospital-B2F-0.jpg","corridor":[{"x":8,"y":50},{"x":92,"y":50}],"locations":{"01":{"name":"교육수련부","x":26.51,"y":35.85,"set":true},"02":{"name":"병동약국/야간약국","x":54.42,"y":38.44,"set":true},"03":{"name":"사회복지팀","x":20.76,"y":25.94,"set":true},"04":{"name":"스포츠의학센터","x":18.09,"y":26.89,"set":true},"05":{"name":"전화예약실","x":50.0,"y":50.0,"set":false}}},"B1F":{"label":"지하 1층","img":"floors/B1F.jpg","remote":"https://www.samsunghospital.com/_newhome/ui/home/static/img/hospital/guide/hospital/B1F/hospital-B1F-0.jpg","corridor":[{"x":8,"y":50},{"x":92,"y":50}],"locations":{"01":{"name":"가정의학과","x":33.94,"y":25.24,"set":true},"02":{"name":"기독교실","x":35.06,"y":38.92,"set":true},"03":{"name":"내분비/당뇨검사실","x":31.0,"y":31.13,"set":true},"04":{"name":"당뇨교육실","x":31.98,"y":31.13,"set":true},"05":{"name":"대강당","x":48.11,"y":36.08,"set":true},"06":{"name":"불교실","x":30.72,"y":41.75,"set":true},"07":{"name":"생활도움방(우편/택배)","x":15.99,"y":35.38,"set":true},"08":{"name":"선물의집(자스민)","x":21.46,"y":35.14,"set":true},"09":{"name":"신한은행","x":16.13,"y":37.03,"set":true},"10":{"name":"안경점(금강안경)","x":24.54,"y":36.08,"set":true},"11":{"name":"영양교육실","x":63.25,"y":33.49,"set":true},"12":{"name":"의료용품점","x":20.76,"y":38.44,"set":true},"13":{"name":"이/미용실","x":17.25,"y":34.2,"set":true},"14":{"name":"재활의학과","x":11.5,"y":31.6,"set":true},"15":{"name":"주차관제실","x":50.0,"y":50.0,"set":false},"16":{"name":"중강당1","x":32.68,"y":38.21,"set":true},"17":{"name":"중강당2","x":30.01,"y":21.46,"set":true},"18":{"name":"직원식당","x":28.89,"y":15.57,"set":true},"19":{"name":"천주교실","x":34.92,"y":29.95,"set":true},"20":{"name":"커피전문점(아티제)","x":46.42,"y":30.19,"set":true},"21":{"name":"편의점(CU)","x":27.63,"y":23.82,"set":true},"22":{"name":"식당(한그루)","x":53.86,"y":24.53,"set":true},"23":{"name":"식당(delacourt)","x":41.8,"y":26.89,"set":true},"24":{"name":"핵의학과","x":45.3,"y":28.54,"set":true}}},"1F":{"label":"1층","img":"floors/1F.jpg","remote":"https://www.samsunghospital.com/_newhome/ui/home/static/img/hospital/guide/hospital/1F/hospital-1F-0.jpg","corridor":[{"x":8,"y":50},{"x":92,"y":50}],"locations":{"01":{"name":"건강검진 예약/상담","x":35.48,"y":64.86,"set":true},"02":{"name":"검사예약","x":37.45,"y":56.13,"set":true},"03":{"name":"고객상담실","x":26.51,"y":41.27,"set":true},"04":{"name":"놀이방","x":50.0,"y":50.0,"set":false},"05":{"name":"내분비대사내과당뇨센터","x":46.14,"y":54.25,"set":true},"06":{"name":"당뇨병센터/내분비대사내과/갑상선센터","x":54.98,"y":51.89,"set":true},"07":{"name":"모유수유실","x":35.48,"y":23.35,"set":true},"08":{"name":"세중여행사","x":50.0,"y":50.0,"set":false},"09":{"name":"소아채혈실","x":44.74,"y":16.27,"set":true},"10":{"name":"소아청소년센터 (소아청소년과/소아외과)","x":31.56,"y":17.45,"set":true},"11":{"name":"소아청소년센터 접수/수납","x":33.66,"y":17.22,"set":true},"12":{"name":"소아청소년주사실","x":39.69,"y":9.67,"set":true},"13":{"name":"소아청소년 통원치료센터","x":24.96,"y":17.92,"set":true},"14":{"name":"안내데스크(일반안내)","x":35.48,"y":44.1,"set":true},"15":{"name":"영상운영실","x":45.3,"y":8.96,"set":true},"16":{"name":"영상의학과(일반촬영실)","x":56.1,"y":9.43,"set":true},"17":{"name":"영상의학과(접수)","x":62.55,"y":17.92,"set":true},"18":{"name":"영상의학과(초음파검사실)","x":50.0,"y":50.0,"set":false},"19":{"name":"영상의학과(투시조영실)","x":62.55,"y":17.92,"set":true},"20":{"name":"영상의학과(CT 검사실)","x":22.44,"y":12.74,"set":true},"21":{"name":"영상의학과(MRI 검사실)","x":26.37,"y":11.79,"set":true},"22":{"name":"외래약국","x":51.61,"y":44.81,"set":true},"23":{"name":"외래치료실(주사실)","x":43.62,"y":15.57,"set":true},"24":{"name":"원무팀","x":61.57,"y":49.53,"set":true},"25":{"name":"원무수납/접수","x":53.58,"y":35.61,"set":true},"26":{"name":"응급실","x":27.77,"y":37.5,"set":true},"27":{"name":"의무기록복사/영상복사","x":29.03,"y":35.61,"set":true},"28":{"name":"인터넷 정보방","x":58.49,"y":39.62,"set":true},"29":{"name":"입퇴원 수속","x":62.97,"y":47.17,"set":true},"30":{"name":"정형외과","x":20.76,"y":36.08,"set":true},"31":{"name":"진료상담","x":28.47,"y":49.29,"set":true},"32":{"name":"척추센터","x":22.44,"y":39.15,"set":true},"33":{"name":"커피전문점(아티제)","x":52.73,"y":34.2,"set":true},"34":{"name":"투석실","x":42.36,"y":16.04,"set":true},"35":{"name":"혈당검사실","x":42.36,"y":59.2,"set":true},"36":{"name":"CT접수","x":50.0,"y":50.0,"set":false},"37":{"name":"응급관찰실","x":50.0,"y":50.0,"set":false}}},"2F":{"label":"2층","img":"floors/2F.jpg","remote":"https://www.samsunghospital.com/_newhome/ui/home/static/img/hospital/guide/hospital/2F/hospital-2F-0.jpg","corridor":[{"x":8,"y":50},{"x":92,"y":50}],"locations":{"01":{"name":"기립경사검사실/ 심박동기.제세동기검사실","x":55.68,"y":20.52,"set":true},"02":{"name":"내과 (알레르기/호흡기/신장/감염/ 류마티스/일반)","x":14.59,"y":38.92,"set":true},"03":{"name":"뇌신경센터(신경과/신경외과)","x":10.8,"y":52.59,"set":true},"04":{"name":"단기응급병상","x":50.0,"y":50.0,"set":false},"05":{"name":"복막투석실","x":59.05,"y":17.69,"set":true},"06":{"name":"소아심장/선천성심장질환 초음파실","x":37.87,"y":23.58,"set":true},"07":{"name":"신경검사실","x":24.54,"y":15.09,"set":true},"08":{"name":"심장 폐기능 혈관 검사접수","x":36.04,"y":7.31,"set":true},"09":{"name":"심장뇌혈관병원 (순환기내과/심장외과/혈관외과/신경과/신경외과)","x":31.42,"y":35.61,"set":true},"10":{"name":"심장초음파검사실","x":27.07,"y":19.1,"set":true},"11":{"name":"심장초음파실 (운동부하 검사실/부하심초음파검사실)","x":29.73,"y":22.88,"set":true},"12":{"name":"심장혈관MRI","x":33.52,"y":12.74,"set":true},"13":{"name":"심전도실","x":50.49,"y":29.01,"set":true},"14":{"name":"일상활동중심전도실","x":48.81,"y":23.35,"set":true},"15":{"name":"중환자보호대기실","x":67.04,"y":24.76,"set":true},"16":{"name":"중환자실(내과계/신경, 소아)","x":50.0,"y":50.0,"set":false},"17":{"name":"채혈실","x":44.32,"y":15.33,"set":true},"18":{"name":"폐기능검사실","x":46.14,"y":18.87,"set":true},"19":{"name":"항응고약물상담실","x":36.04,"y":21.7,"set":true},"20":{"name":"혈관검사실","x":40.53,"y":13.44,"set":true},"21":{"name":"혈당검사실","x":50.0,"y":50.0,"set":false}}},"3F":{"label":"3층","img":"floors/3F.jpg","remote":"https://www.samsunghospital.com/_newhome/ui/home/static/img/hospital/guide/hospital/3F/hospital-3F-0.jpg","corridor":[{"x":8,"y":50},{"x":92,"y":50}],"locations":{"01":{"name":"병리과","x":32.12,"y":14.39,"set":true},"02":{"name":"부인암상담실","x":16.41,"y":21.46,"set":true},"03":{"name":"산부인과","x":24.4,"y":30.42,"set":true},"04":{"name":"산부인과접수","x":28.05,"y":33.73,"set":true},"05":{"name":"수술및레이져치료실","x":50.0,"y":50.0,"set":false},"06":{"name":"수술실보호자대기실","x":46.28,"y":25.47,"set":true},"07":{"name":"예진실","x":27.21,"y":28.54,"set":true},"08":{"name":"원무수납/접수","x":29.31,"y":35.61,"set":true},"09":{"name":"장기이식센터","x":30.01,"y":16.98,"set":true},"10":{"name":"중앙수술장","x":57.36,"y":30.19,"set":true},"11":{"name":"중환자보호대기실","x":53.58,"y":29.72,"set":true},"12":{"name":"중환자실 (심장내과/소아심장,혈관)","x":56.1,"y":17.69,"set":true},"13":{"name":"중환자실 (외과/신경외과/심장외과)","x":27.07,"y":29.72,"set":true},"14":{"name":"초음파검사실","x":50.0,"y":50.0,"set":false},"15":{"name":"초음파접수","x":17.53,"y":20.05,"set":true},"16":{"name":"태아안전검사실","x":50.0,"y":50.0,"set":false},"17":{"name":"호흡기약물상담실","x":35.48,"y":20.52,"set":true},"18":{"name":"회복실","x":21.04,"y":17.92,"set":true}}},"4F":{"label":"4층","img":"floors/4F.jpg","remote":"https://www.samsunghospital.com/_newhome/ui/home/static/img/hospital/guide/hospital/4F/hospital-4F-0.jpg","corridor":[{"x":8,"y":50},{"x":92,"y":50}],"locations":{"01":{"name":"내시경실","x":25.81,"y":31.37,"set":true},"02":{"name":"내시경접수","x":25.67,"y":28.77,"set":true},"03":{"name":"내시경회복실","x":20.34,"y":20.99,"set":true},"04":{"name":"소화기능검사실","x":31.7,"y":35.14,"set":true},"05":{"name":"소화기센터 (소화기내과, 소화기외과)","x":35.9,"y":13.44,"set":true},"06":{"name":"췌담도검사실","x":50.0,"y":50.0,"set":false}}},"5F":{"label":"5층","img":"floors/5F.jpg","remote":"https://www.samsunghospital.com/_newhome/ui/home/static/img/hospital/guide/hospital/5F/hospital-5F-0.jpg","corridor":[{"x":8,"y":50},{"x":92,"y":50}],"locations":{}},"6F":{"label":"6층","img":"floors/6F.jpg","remote":"https://www.samsunghospital.com/_newhome/ui/home/static/img/hospital/guide/hospital/6F/hospital-6F-0.jpg","corridor":[{"x":8,"y":50},{"x":92,"y":50}],"locations":{"01":{"name":"간호사실(산부인과)","x":50.0,"y":50.0,"set":false},"02":{"name":"격리실","x":50.0,"y":50.0,"set":false},"03":{"name":"병동(1인실)","x":50.0,"y":50.0,"set":false},"04":{"name":"병동(2인실)","x":50.0,"y":50.0,"set":false},"05":{"name":"병동(6인실)","x":50.0,"y":50.0,"set":false},"06":{"name":"분만실","x":30.01,"y":16.98,"set":true},"07":{"name":"분만장초음파실","x":50.0,"y":50.0,"set":false},"08":{"name":"신생아실","x":50.0,"y":50.0,"set":false},"09":{"name":"제1신생아중환자실","x":41.8,"y":22.64,"set":true},"10":{"name":"제2신생아중환자실","x":48.67,"y":8.02,"set":true},"11":{"name":"회복/관찰실","x":50.0,"y":50.0,"set":false}}},"7F":{"label":"7층","img":"floors/7F.jpg","remote":"https://www.samsunghospital.com/_newhome/ui/home/static/img/hospital/guide/hospital/7F/hospital-7F-0.jpg","corridor":[{"x":8,"y":50},{"x":92,"y":50}],"locations":{"01":{"name":"간호사실(내분비내과, 이식외과, 산부인과)","x":50.0,"y":50.0,"set":false},"02":{"name":"간호사실(산부인과)","x":50.0,"y":50.0,"set":false},"03":{"name":"병동(1인실)","x":50.0,"y":50.0,"set":false},"04":{"name":"병동(2인실)","x":50.0,"y":50.0,"set":false},"05":{"name":"병동(3인실)","x":50.0,"y":50.0,"set":false},"06":{"name":"병동(5인실)","x":50.0,"y":50.0,"set":false},"07":{"name":"병동(6인실)","x":50.0,"y":50.0,"set":false},"08":{"name":"사회복지상담실","x":50.0,"y":50.0,"set":false},"09":{"name":"치료실","x":50.0,"y":50.0,"set":false},"10":{"name":"휴게실","x":50.0,"y":50.0,"set":false}}},"8F":{"label":"8층","img":"floors/8F.jpg","remote":"https://www.samsunghospital.com/_newhome/ui/home/static/img/hospital/guide/hospital/8F/hospital-8F-0.jpg","corridor":[{"x":8,"y":50},{"x":92,"y":50}],"locations":{"01":{"name":"간호사실(소아청소년과)","x":50.0,"y":50.0,"set":false},"02":{"name":"병동(1인실)","x":50.0,"y":50.0,"set":false},"03":{"name":"병동(2인실)","x":50.0,"y":50.0,"set":false},"04":{"name":"병동(5인실)","x":50.0,"y":50.0,"set":false},"05":{"name":"병동(6인실)","x":50.0,"y":50.0,"set":false},"06":{"name":"병원학교","x":66.34,"y":12.26,"set":true},"07":{"name":"소아조혈모세포이식실","x":50.0,"y":50.0,"set":false}}},"9F":{"label":"9층","img":"floors/9F.jpg","remote":"https://www.samsunghospital.com/_newhome/ui/home/static/img/hospital/guide/hospital/9F/hospital-9F-0.jpg","corridor":[{"x":8,"y":50},{"x":92,"y":50}],"locations":{"01":{"name":"간호사실 (소화기내과, 외과)","x":50.0,"y":50.0,"set":false},"02":{"name":"병동(1인실)","x":50.0,"y":50.0,"set":false},"03":{"name":"병동(2인실)","x":50.0,"y":50.0,"set":false},"04":{"name":"병동(3인실)","x":50.0,"y":50.0,"set":false},"05":{"name":"병동(5인실)","x":50.0,"y":50.0,"set":false},"06":{"name":"병동(6인실)","x":50.0,"y":50.0,"set":false},"07":{"name":"신생아중환자실(5인실)","x":50.0,"y":50.0,"set":false},"08":{"name":"임상시험센터","x":50.0,"y":50.0,"set":false},"09":{"name":"휴게실","x":50.0,"y":50.0,"set":false}}},"10F":{"label":"10층","img":"floors/10F.jpg","remote":"https://www.samsunghospital.com/_newhome/ui/home/static/img/hospital/guide/hospital/10F/hospital-10F-0.jpg","corridor":[{"x":8,"y":50},{"x":92,"y":50}],"locations":{"01":{"name":"간호사실 (소화기내과, 외과)","x":50.0,"y":50.0,"set":false},"02":{"name":"병동(1인실)","x":50.0,"y":50.0,"set":false},"03":{"name":"병동(2인실)","x":50.0,"y":50.0,"set":false},"04":{"name":"병동(3인실)","x":50.0,"y":50.0,"set":false},"05":{"name":"병동(5인실)","x":50.0,"y":50.0,"set":false},"06":{"name":"병동(6인실)","x":50.0,"y":50.0,"set":false},"07":{"name":"준중환자실(4인실)","x":50.0,"y":50.0,"set":false},"08":{"name":"휴게실","x":50.0,"y":50.0,"set":false}}},"11F":{"label":"11층","img":"floors/11F.jpg","remote":"https://www.samsunghospital.com/_newhome/ui/home/static/img/hospital/guide/hospital/11F/hospital-11F-0.jpg","corridor":[{"x":8,"y":50},{"x":92,"y":50}],"locations":{"01":{"name":"간호사실 (소화기내과, 외과)","x":50.0,"y":50.0,"set":false},"02":{"name":"병동(1인실)","x":50.0,"y":50.0,"set":false},"03":{"name":"병동(2인실)","x":50.0,"y":50.0,"set":false},"04":{"name":"병동(5인실)","x":50.0,"y":50.0,"set":false},"05":{"name":"병동(6인실)","x":50.0,"y":50.0,"set":false},"06":{"name":"휴게실","x":50.0,"y":50.0,"set":false}}},"12F":{"label":"12층","img":"floors/12F.jpg","remote":"https://www.samsunghospital.com/_newhome/ui/home/static/img/hospital/guide/hospital/12F/hospital-12F-0.jpg","corridor":[{"x":8,"y":50},{"x":92,"y":50}],"locations":{"01":{"name":"간호사실 (소화기내과, 외과)","x":50.0,"y":50.0,"set":false},"02":{"name":"병동(1인실)","x":50.0,"y":50.0,"set":false},"03":{"name":"병동(2인실)","x":50.0,"y":50.0,"set":false},"04":{"name":"병동(5인실)","x":50.0,"y":50.0,"set":false},"05":{"name":"병동(6인실)","x":50.0,"y":50.0,"set":false},"06":{"name":"휴게실","x":50.0,"y":50.0,"set":false}}},"13F":{"label":"13층","img":"floors/13F.jpg","remote":"https://www.samsunghospital.com/_newhome/ui/home/static/img/hospital/guide/hospital/13F/hospital-13F-0.jpg","corridor":[{"x":8,"y":50},{"x":92,"y":50}],"locations":{"01":{"name":"간호사실 (소화기내과, 외과)","x":50.0,"y":50.0,"set":false},"02":{"name":"간호사실 (신경외과)","x":50.0,"y":50.0,"set":false},"03":{"name":"병동(1인실)","x":50.0,"y":50.0,"set":false},"04":{"name":"병동(2인실)","x":50.0,"y":50.0,"set":false},"05":{"name":"병동(5인실)","x":50.0,"y":50.0,"set":false},"06":{"name":"병동(6인실)","x":50.0,"y":50.0,"set":false},"07":{"name":"휴게실","x":50.0,"y":50.0,"set":false}}},"14F":{"label":"14층","img":"floors/14F.jpg","remote":"https://www.samsunghospital.com/_newhome/ui/home/static/img/hospital/guide/hospital/14F/hospital-14F-0.jpg","corridor":[{"x":8,"y":50},{"x":92,"y":50}],"locations":{"01":{"name":"간호사실 (뇌졸중센터)","x":50.0,"y":50.0,"set":false},"02":{"name":"간호사실 (신경과, 재활의학과)","x":50.0,"y":50.0,"set":false},"03":{"name":"병동(1인실)","x":50.0,"y":50.0,"set":false},"04":{"name":"병동(2인실)","x":50.0,"y":50.0,"set":false},"05":{"name":"병동(5인실)","x":50.0,"y":50.0,"set":false},"06":{"name":"병동(6인실)","x":50.0,"y":50.0,"set":false},"07":{"name":"준중환자실(4인실)","x":50.0,"y":50.0,"set":false},"08":{"name":"휴게실","x":50.0,"y":50.0,"set":false}}},"15F":{"label":"15층","img":"floors/15F.jpg","remote":"https://www.samsunghospital.com/_newhome/ui/home/static/img/hospital/guide/hospital/15F/hospital-15F-0.jpg","corridor":[{"x":8,"y":50},{"x":92,"y":50}],"locations":{"01":{"name":"간호사실 (혈액종양내과)","x":50.0,"y":50.0,"set":false},"02":{"name":"뇌혈류검사실","x":33.38,"y":30.66,"set":true},"03":{"name":"병동(1인실)","x":50.0,"y":50.0,"set":false},"04":{"name":"병동(2인실)","x":50.0,"y":50.0,"set":false},"05":{"name":"병동(5인실)","x":50.0,"y":50.0,"set":false},"06":{"name":"병동(6인실)","x":50.0,"y":50.0,"set":false},"07":{"name":"조혈모세포이식병동 (무균실)","x":50.0,"y":50.0,"set":false},"08":{"name":"집중치료실","x":50.0,"y":50.0,"set":false},"09":{"name":"휴게실","x":50.0,"y":50.0,"set":false}}},"16F":{"label":"16층","img":"floors/16F.jpg","remote":"https://www.samsunghospital.com/_newhome/ui/home/static/img/hospital/guide/hospital/16F/hospital-16F-0.jpg","corridor":[{"x":8,"y":50},{"x":92,"y":50}],"locations":{"01":{"name":"간호사실 (심장혈관센터)","x":50.0,"y":50.0,"set":false},"02":{"name":"병동(1인실)","x":50.0,"y":50.0,"set":false},"03":{"name":"병동(2인실)","x":50.0,"y":50.0,"set":false},"04":{"name":"병동(5인실)","x":50.0,"y":50.0,"set":false},"05":{"name":"병동(6인실)","x":50.0,"y":50.0,"set":false},"06":{"name":"심장초음파실","x":50.0,"y":50.0,"set":false},"07":{"name":"심혈관단기입원실","x":50.0,"y":50.0,"set":false},"08":{"name":"집중치료실(5인실)","x":50.0,"y":50.0,"set":false},"09":{"name":"휴게실","x":50.0,"y":50.0,"set":false}}},"17F":{"label":"17층","img":"floors/17F.jpg","remote":"https://www.samsunghospital.com/_newhome/ui/home/static/img/hospital/guide/hospital/17F/hospital-17F-0.jpg","corridor":[{"x":8,"y":50},{"x":92,"y":50}],"locations":{"01":{"name":"간호사실 (호흡기내과)","x":50.0,"y":50.0,"set":false},"02":{"name":"간호사실 (흉부외과, 폐식도외과, 격리병동)","x":50.0,"y":50.0,"set":false},"03":{"name":"병동(1인실)","x":50.0,"y":50.0,"set":false},"04":{"name":"병동(2인실)","x":50.0,"y":50.0,"set":false},"05":{"name":"병동(5인실)","x":50.0,"y":50.0,"set":false},"06":{"name":"병동(6인실)","x":50.0,"y":50.0,"set":false},"07":{"name":"휴게실","x":50.0,"y":50.0,"set":false}}},"18F":{"label":"18층","img":"floors/18F.jpg","remote":"https://www.samsunghospital.com/_newhome/ui/home/static/img/hospital/guide/hospital/18F/hospital-18F-0.jpg","corridor":[{"x":8,"y":50},{"x":92,"y":50}],"locations":{"01":{"name":"간호사실 (호흡기내과)","x":50.0,"y":50.0,"set":false},"02":{"name":"간호사실(흉부외과, 폐식도외과,격리병동)","x":50.0,"y":50.0,"set":false},"03":{"name":"병동(1인실)","x":50.0,"y":50.0,"set":false},"04":{"name":"병동(2인실)","x":50.0,"y":50.0,"set":false},"05":{"name":"병동(5인실)","x":50.0,"y":50.0,"set":false},"06":{"name":"병동(6인실)","x":50.0,"y":50.0,"set":false},"07":{"name":"휴게실","x":50.0,"y":50.0,"set":false}}},"19F":{"label":"19층","img":"floors/19F.jpg","remote":"https://www.samsunghospital.com/_newhome/ui/home/static/img/hospital/guide/hospital/19F/hospital-19F-0.jpg","corridor":[{"x":8,"y":50},{"x":92,"y":50}],"locations":{"01":{"name":"간호사실 (VIP병동)","x":21.88,"y":11.32,"set":true},"02":{"name":"병동(특실)","x":50.0,"y":50.0,"set":false},"03":{"name":"비디오뇌파집중검사실","x":45.3,"y":19.58,"set":true},"04":{"name":"진료부회의실","x":57.36,"y":7.78,"set":true},"05":{"name":"휴게실","x":50.0,"y":50.0,"set":false}}},"20F":{"label":"20층","img":"floors/20F.jpg","remote":"https://www.samsunghospital.com/_newhome/ui/home/static/img/hospital/guide/hospital/20F/hospital-20F-0.jpg","corridor":[{"x":8,"y":50},{"x":92,"y":50}],"locations":{"01":{"name":"간호사실 (VIP병동)","x":50.0,"y":50.0,"set":false},"02":{"name":"병동(VIP)","x":50.0,"y":50.0,"set":false}}}};
+const FLOOR_ORDER = ["B3F","B2F","B1F","1F","2F","3F","4F","5F","6F","7F","8F","9F","10F","11F","12F","13F","14F","15F","16F","17F","18F","19F","20F"];
+/* ════════ ▲▲ FLOOR DATA ▲▲ ════════ */
 
 /* ── 이미지 로드 ── */
 const img = document.getElementById('mapImg');
@@ -262,23 +217,24 @@ const overlay = document.getElementById('overlay');
 const stage = document.getElementById('stage');
 let IW = 1000, IH = 560;              // 이미지 자연 크기 (로드 후 갱신)
 
-function tryLoad(i){
-  if(i >= FLOOR.imgCandidates.length){
+function tryLoad(candidates, i){
+  if(i >= candidates.length){
     img.style.display='none';
     document.getElementById('imgError').style.display='block';
     // 오류 시에도 오버레이가 동작하도록 기본 비율 유지
     overlay.setAttribute('viewBox',`0 0 ${IW} ${IH}`);
     return;
   }
+  img.style.display='';
+  document.getElementById('imgError').style.display='none';
   img.onload = ()=>{
     IW = img.naturalWidth; IH = img.naturalHeight;
     overlay.setAttribute('viewBox',`0 0 ${IW} ${IH}`);
     renderAll();
   };
-  img.onerror = ()=>tryLoad(i+1);
-  img.src = FLOOR.imgCandidates[i];
+  img.onerror = ()=>tryLoad(candidates, i+1);
+  img.src = candidates[i];
 }
-tryLoad(0);
 
 /* ── 좌표 변환 (% ↔ 이미지 px) ── */
 const px = p => ({x:p.x/100*IW, y:p.y/100*IH});
@@ -289,25 +245,55 @@ function evtToImg(e){
 }
 
 /* ── 상태 ── */
-let startId='gate1', endId='';
+let currentFloor = '1F';
+let CAL = FLOORS_DATA[currentFloor];
+let L = CAL.locations;
+let ids = Object.keys(L);
+let startId='', endId='';
 let calMode=false, calSubMode='loc';   // 'loc' | 'cor'
 const $ = id=>document.getElementById(id);
-const L = CAL.locations;
 
 /* ── 셀렉트 ── */
-const ids = Object.keys(L);
-const sortedIds = [...ids].sort((a,b)=>L[a].name.localeCompare(L[b].name,'ko'));
-function fillSel(sel, ph){
+function fillSel(sel, ph, sortedIds){
   sel.innerHTML = `<option value="">${ph}</option>` +
     sortedIds.map(id=>`<option value="${id}">${L[id].name}${L[id].set?'':' *'}</option>`).join('');
 }
 function refreshSelects(){
+  const sortedIds = [...ids].sort((a,b)=>L[a].name.localeCompare(L[b].name,'ko'));
   const s=$('startSel').value, e=$('endSel').value, c=$('calSel').value;
-  fillSel($('startSel'),'현재 위치 선택'); fillSel($('endSel'),'목적지 선택'); fillSel($('calSel'),'보정할 시설 선택');
-  $('startSel').value=s||startId; $('endSel').value=e; $('calSel').value=c;
+  fillSel($('startSel'),'현재 위치 선택',sortedIds);
+  fillSel($('endSel'),'목적지 선택',sortedIds);
+  fillSel($('calSel'),'보정할 시설 선택',sortedIds);
+  $('startSel').value = ids.includes(s) ? s : (startId||'');
+  $('endSel').value = ids.includes(e) ? e : (endId||'');
+  $('calSel').value = ids.includes(c) ? c : '';
 }
-refreshSelects();
-$('startSel').value='gate1';
+function fillFloorSel(){
+  const sel=$('floorSel');
+  sel.innerHTML = FLOOR_ORDER.map(k=>`<option value="${k}">${FLOORS_DATA[k].label} (${k})</option>`).join('');
+  sel.value = currentFloor;
+}
+function loadFloor(key){
+  currentFloor = key;
+  CAL = FLOORS_DATA[key];
+  L = CAL.locations;
+  ids = Object.keys(L);
+  startId=''; endId='';
+  clearRoute();
+  $('meDot').style.display='none';
+  $('floorBadge').textContent = key;
+  $('mapTitle').textContent = `본관 ${CAL.label} (공식 원내지도)`;
+  img.alt = `본관 ${CAL.label} 원내지도`;
+  document.getElementById('calFloorLabel').textContent = `— 현재 편집 중: ${CAL.label}(${key})`;
+  refreshSelects();
+  if(ids.length===0){
+    setStatus(`이 층은 공식 페이지에 등록된 시설 목록이 없습니다. (지도만 표시)`);
+  } else {
+    setStatus('현재 위치와 목적지를 선택한 뒤 <b>경로 표시</b>를 누르세요. 지도의 위치를 직접 클릭해도 됩니다.');
+  }
+  tryLoad([CAL.img, CAL.remote], 0);
+  if(calMode){ renderCal(); dumpJson(); }
+}
 
 /* ── 복도 폴리라인 위 최단 경로 ── */
 function projectOnSeg(p,a,b){
@@ -400,16 +386,19 @@ function endIdPending(){ return startId && !endId; }
 /* ── 이벤트 ── */
 $('findBtn').addEventListener('click', drawRoute);
 $('resetBtn').addEventListener('click', ()=>{
-  startId='gate1'; endId='';
-  $('startSel').value='gate1'; $('endSel').value='';
-  clearRoute(); placeMe();
+  startId=''; endId='';
+  $('startSel').value=''; $('endSel').value='';
+  clearRoute();
+  $('meDot').style.display='none';
   setStatus('초기화되었습니다.');
 });
 $('startSel').addEventListener('change', e=>{
   startId=e.target.value; endId=''; $('endSel').value='';
-  clearRoute(); if(startId) placeMe();
+  clearRoute();
+  if(startId) placeMe(); else $('meDot').style.display='none';
 });
 $('endSel').addEventListener('change', e=>{ endId=e.target.value; });
+$('floorSel').addEventListener('change', e=> loadFloor(e.target.value));
 
 /* ════════ 보정 모드 ════════ */
 $('calBtn').addEventListener('click', ()=>{
@@ -506,18 +495,22 @@ function dumpJson(){
 $('exportBtn').addEventListener('click', async ()=>{
   dumpJson();
   try{ await navigator.clipboard.writeText($('calJson').value);
-       setStatus('좌표 JSON이 클립보드에 복사되었습니다. HTML 파일의 CALIBRATION DATA 블록에 붙여넣으세요.'); }
+       setStatus(`좌표 JSON이 클립보드에 복사되었습니다. FLOORS_DATA["${currentFloor}"] 값에 붙여넣으세요.`); }
   catch{ $('calJson').select(); setStatus('아래 텍스트를 직접 복사해 주세요.'); }
 });
 $('importBtn').addEventListener('click', ()=>{
   try{
     const d=JSON.parse($('calJson').value);
-    if(d.locations) Object.assign(CAL.locations,d.locations);
+    if(d.locations) Object.assign(L,d.locations);
     if(Array.isArray(d.corridor)){ CAL.corridor.length=0; CAL.corridor.push(...d.corridor); }
     refreshSelects(); renderCal(); renderAll();
     setStatus('JSON이 적용되었습니다.');
   }catch(err){ alert('JSON 파싱 오류: '+err.message); }
 });
+
+/* ── 초기화 ── */
+fillFloorSel();
+loadFloor(currentFloor);
 </script>
 </body>
 </html>
