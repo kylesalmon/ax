@@ -40,13 +40,18 @@
   #findBtn{background:var(--accent); color:#fff}
   #findBtn:hover{filter:brightness(1.08)}
   #resetBtn{background:#fff; color:var(--ink-soft); border-color:var(--line)}
-  #calBtn{background:#fff; color:var(--cal); border-color:var(--cal)}
-  #calBtn.on{background:var(--cal); color:#fff}
   #startTransportBtn{background:#7c3aed; color:#fff}
   #stopTransportBtn{background:#fff; color:#c0392b; border-color:#c0392b}
   #elevArrivedBtn{background:#0a6e5c; color:#fff}
   #relocBtn{background:#fff; color:#7c3aed; border-color:#7c3aed}
   #relocBtn.on{background:#7c3aed; color:#fff}
+  #dirPicker{display:flex; flex-direction:column; gap:6px}
+  .dir-label{font-size:12.5px; font-weight:700; color:var(--ink-soft)}
+  .dir-label span{font-weight:400; opacity:.75}
+  .dir-row{display:flex; gap:8px; flex-wrap:wrap}
+  .dirBtn{background:#fff; color:var(--ink); border-color:var(--line); min-width:74px; font-size:15px}
+  .dirBtn:hover{border-color:#7c3aed; color:#7c3aed}
+  #dirCancelBtn{background:#fff; color:var(--ink-soft); border-color:var(--line)}
   .statusbar{margin-top:10px; font-size:13.5px; color:var(--ink-soft); min-height:20px}
   .statusbar b{color:var(--ink)}
 
@@ -62,7 +67,6 @@
   .map-stage{position:relative; background:#fafbfc}
   .map-stage img{display:block; width:100%; height:auto; user-select:none; -webkit-user-drag:none}
   .map-stage svg{position:absolute; inset:0; width:100%; height:100%}
-  .map-stage.cal{cursor:crosshair}
   #imgError{display:none; padding:40px 24px; text-align:center; color:var(--ink-soft);
             font-size:14px; line-height:1.8}
   #imgError code{background:#eef1f4; padding:2px 6px; border-radius:4px; font-size:12.5px}
@@ -79,29 +83,6 @@
 
   .pulse{fill:var(--me); opacity:.35; animation:pulse 1.6s ease-out infinite}
   @keyframes pulse{0%{r:10;opacity:.45} 70%{r:26;opacity:0} 100%{r:26;opacity:0}}
-
-  .cal-pt{fill:var(--cal); stroke:#fff; stroke-width:2; cursor:grab}
-  .cal-pt.unset{fill:#b8c4cf}
-  .cal-label{font-size:12px; font-weight:700; fill:var(--cal);
-             paint-order:stroke; stroke:#fff; stroke-width:3px; pointer-events:none}
-  .cor-pt{fill:#8a2be2; stroke:#fff; stroke-width:2; cursor:grab}
-  .cor-line{fill:none; stroke:#8a2be2; stroke-width:3; stroke-dasharray:6 6; opacity:.7}
-
-  /* ── 보정 패널 ── */
-  .cal-panel{display:none; margin-top:14px; background:#f0f6ff; border:1.5px solid var(--cal);
-             border-radius:12px; padding:16px 18px}
-  .cal-panel.on{display:block}
-  .cal-panel h2{font-size:15px; color:var(--cal); margin-bottom:8px}
-  .cal-panel p{font-size:13px; color:var(--ink-soft); line-height:1.7; margin-bottom:10px}
-  .cal-row{display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-bottom:10px}
-  .cal-row select{max-width:340px}
-  .cal-mode{display:flex; gap:0; border:1.5px solid var(--cal); border-radius:8px; overflow:hidden}
-  .cal-mode button{border-radius:0; border:none; background:#fff; color:var(--cal); padding:9px 14px}
-  .cal-mode button.on{background:var(--cal); color:#fff}
-  textarea{width:100%; height:130px; font-family:ui-monospace,Consolas,monospace; font-size:12px;
-           border:1px solid var(--line); border-radius:8px; padding:10px; resize:vertical}
-  .cal-actions{display:flex; gap:8px; margin-top:8px; flex-wrap:wrap}
-  .cal-actions button{background:#fff; border-color:var(--cal); color:var(--cal); font-size:13px; padding:8px 14px}
 
   .notice{margin-top:14px; font-size:12px; color:var(--ink-soft); line-height:1.7}
   @media (max-width:640px){ .field{min-width:100%} header h1{font-size:16px} }
@@ -132,10 +113,19 @@
     </div>
     <button id="findBtn">경로 표시</button>
     <button id="resetBtn">초기화</button>
-    <button id="calBtn">⚙ 보정 모드</button>
   </div>
   <div class="controls" id="transportBar" style="display:none; margin-top:10px">
-    <button id="startTransportBtn">🛏 이송 시작 (실시간 추적)</button>
+    <button id="startTransportBtn">🛏 이송 시작</button>
+    <div id="dirPicker" style="display:none">
+      <div class="dir-label">처음 이동할 방향을 누르세요 <span>(지도 위쪽이 북)</span></div>
+      <div class="dir-row">
+        <button class="dirBtn" data-dir="N">↑ 북</button>
+        <button class="dirBtn" data-dir="E">→ 동</button>
+        <button class="dirBtn" data-dir="S">↓ 남</button>
+        <button class="dirBtn" data-dir="W">← 서</button>
+        <button id="dirCancelBtn">취소</button>
+      </div>
+    </div>
     <button id="stopTransportBtn" style="display:none">■ 이송 중지</button>
     <button id="elevArrivedBtn" style="display:none">🛗 내렸어요</button>
     <button id="relocBtn" style="display:none">📍 위치 재설정</button>
@@ -159,11 +149,8 @@
         인터넷 연결을 확인하거나, <code>floors/</code> 폴더에 해당 층 이미지 파일이 있는지 확인해 주세요.
       </div>
       <svg id="overlay" preserveAspectRatio="none">
-        <polyline id="corLine" class="cor-line" style="display:none"/>
-        <g id="corPts" style="display:none"></g>
         <path id="routeCasing"/>
         <path id="routePath"/>
-        <g id="calPts" style="display:none"></g>
         <g id="destPin" style="display:none">
           <path d="M0,-34 C-11,-34 -17,-25 -17,-17 C-17,-7 0,7 0,7 C0,7 17,-7 17,-17 C17,-25 11,-34 0,-34 Z"
                 fill="var(--accent)" stroke="#fff" stroke-width="2"/>
@@ -171,43 +158,20 @@
         </g>
         <g id="meDot" style="display:none">
           <circle class="pulse" r="10"/>
+          <g id="meHeading" style="display:none">
+            <path d="M0,-26 L8,-13 L-8,-13 Z" fill="var(--me)" stroke="#fff" stroke-width="2"/>
+          </g>
           <circle r="9" fill="var(--me)" stroke="#fff" stroke-width="3"/>
         </g>
       </svg>
     </div>
   </div>
 
-  <!-- ── 보정 패널 ── -->
-  <div class="cal-panel" id="calPanel">
-    <h2>위치 보정 모드 <span id="calFloorLabel" style="font-size:12px;font-weight:400;color:var(--ink-soft)"></span></h2>
-    <p>
-      <b>위치 지정</b>: 아래에서 시설을 고른 뒤 지도의 실제 위치를 클릭하세요. 파란 점은 드래그로 미세 조정할 수 있습니다.
-      회색 점은 아직 좌표가 확정되지 않은(추정) 시설입니다.<br>
-      <b>복도 경로</b>: 경로선이 지나갈 복도 중심선을 순서대로 클릭해 찍습니다. 경로는 항상 이 선을 따라 그려집니다.
-      같은 지점을 두 번 지나가게 찍으면(예: 갈림길로 되돌아오기) 그 지점은 자동으로 <b>분기점</b>으로 인식됩니다.<br>
-      보정은 <b>현재 선택된 층</b>에만 적용됩니다. 보정이 끝나면 <b>좌표 JSON 복사</b> → 이 HTML 파일의
-      <code>FLOORS_DATA</code> 객체에서 해당 층 키(예: <code>"1F"</code>)의 값에 붙여넣으면 영구 반영됩니다.
-    </p>
-    <div class="cal-row">
-      <div class="cal-mode">
-        <button id="modeLoc" class="on">위치 지정</button>
-        <button id="modeCor">복도 경로</button>
-      </div>
-      <select id="calSel"></select>
-      <button id="corUndo" style="display:none">한 점 취소</button>
-      <button id="corClear" style="display:none">복도 전체 지우기</button>
-    </div>
-    <textarea id="calJson" spellcheck="false" placeholder="좌표 JSON이 여기에 표시됩니다"></textarea>
-    <div class="cal-actions">
-      <button id="exportBtn">좌표 JSON 복사</button>
-      <button id="importBtn">JSON 적용 (붙여넣은 내용 반영)</button>
-    </div>
-  </div>
-
   <p class="notice">
     ※ 지도 이미지 © 삼성서울병원 — 병원 승인 하에 원내 AX 프로그램 용도로 사용.
     좌표는 삼성서울병원 공식 원내 안내 페이지(병원둘러보기)의 좌표 데이터를 기반으로 자동 반영했습니다.
-    일부 층(주로 병동 전용층)은 공식 페이지에 시설별 좌표가 없어 <b>*</b> 표시된 미확정 상태이며, 보정 모드에서 직접 확정할 수 있습니다.
+    일부 층(주로 병동 전용층)은 공식 페이지에 시설별 좌표가 없어 <b>*</b> 표시된 미확정 상태입니다.
+    좌표·복도 데이터는 이 파일 상단의 <code>FLOORS_DATA</code>에서 직접 수정할 수 있습니다.
   </p>
 </div>
 
@@ -227,7 +191,6 @@ const FLOOR_ORDER = ["B3F","B2F","B1F","1F","2F","3F","4F","5F","6F","7F","8F","
 /* ── 이미지 로드 ── */
 const img = document.getElementById('mapImg');
 const overlay = document.getElementById('overlay');
-const stage = document.getElementById('stage');
 let IW = 1000, IH = 560;              // 이미지 자연 크기 (로드 후 갱신)
 
 function tryLoad(candidates, i){
@@ -264,7 +227,6 @@ let L = CAL.locations;
 let ids = Object.keys(L);
 let startId='';
 let endFloor='', endId='';   // 목적지는 다른 층일 수 있음
-let calMode=false, calSubMode='loc';   // 'loc' | 'cor'
 let elevatorBusy=false;
 const $ = id=>document.getElementById(id);
 const ELEV_RE = /엘리베이터|승강기|E\/V/i;
@@ -294,11 +256,9 @@ function fillEndSelGlobal(){
 }
 function refreshSelects(){
   const sortedIds = [...ids].sort((a,b)=>L[a].name.localeCompare(L[b].name,'ko'));
-  const s=$('startSel').value, c=$('calSel').value;
+  const s=$('startSel').value;
   fillSel($('startSel'),'현재 위치 선택',sortedIds);
-  fillSel($('calSel'),'보정할 시설 선택',sortedIds);
   $('startSel').value = ids.includes(s) ? s : (startId||'');
-  $('calSel').value = ids.includes(c) ? c : '';
   fillEndSelGlobal();
 }
 function fillFloorSel(){
@@ -322,7 +282,6 @@ function loadFloor(key, opts){
   $('floorBadge').textContent = key;
   $('mapTitle').textContent = `본관 ${CAL.label} (공식 원내지도)`;
   img.alt = `본관 ${CAL.label} 원내지도`;
-  document.getElementById('calFloorLabel').textContent = `— 현재 편집 중: ${CAL.label}(${key})`;
   refreshSelects();
   if(!opts.keepSelection){
     if(ids.length===0){
@@ -332,7 +291,6 @@ function loadFloor(key, opts){
     }
   }
   tryLoad([CAL.img, CAL.remote], 0);
-  if(calMode){ renderCal(); dumpJson(); }
 }
 
 /* ── 다른 층 목적지: 엘리베이터 이동 연출 ── */
@@ -739,6 +697,11 @@ function relocalizeTowardTarget(){
   return true;
 }
 
+function updateHeadingArrow(){
+  // 빨간점 위 삼각형이 "지금 시스템이 생각하는 진행방향". 실제와 다르면 바로 눈에 띈다.
+  const deg=estHeadingRad*180/Math.PI + 90;   // 화살표 원본이 위(북)를 향해 그려져 있으므로 +90
+  $('meHeading').setAttribute('transform',`rotate(${deg.toFixed(1)})`);
+}
 function updateRouteLineFrom(pointA, destP){
   const pts = routePoints(pointA, destP).filter((p,i,arr)=> i===0 ||
     Math.hypot(p.x-arr[i-1].x, p.y-arr[i-1].y) > 2);
@@ -841,6 +804,7 @@ function transportTick(now){
   const p=corridorPos() || {x:IW/2,y:IH/2};
   $('meDot').style.display='';
   $('meDot').setAttribute('transform',`translate(${p.x},${p.y})`);
+  updateHeadingArrow();
 
   if(transportNeedsElevator){
     const other=findAllElevatorIds().find(id=>{
@@ -994,12 +958,28 @@ function onDeviceMotion(e){
   } else motionAboveSince=0;
 }
 
-async function startTransport(){
+/* 지도 기준 방향 → 화면 각도(라디안). 화면 y축이 아래로 증가하므로 북(위)이 -90도. */
+const DIR_RAD = { N:-Math.PI/2, E:0, S:Math.PI/2, W:Math.PI };
+/* 자이로는 "얼마나 돌았는지"(상대값)만 알려주기 때문에, 처음에 어느 쪽을 보고 있었는지를
+   알아야 이후 방향이 전부 맞는다. 경로에서 자동으로 추측하던 것을 사람이 직접 고르게 바꿨다. */
+function promptDirection(){
   if(!lastRoutePts || lastRoutePts.length<2) return;
   if(!CAL.corridor || CAL.corridor.length<2){
-    setStatus('이 층은 복도 경로가 없어 실시간 추적을 할 수 없습니다. 보정 모드에서 복도를 먼저 찍어 주세요.');
+    setStatus('이 층은 복도 데이터가 없어 실시간 추적을 할 수 없습니다.');
     return;
   }
+  $('startTransportBtn').style.display='none';
+  $('dirPicker').style.display='';
+  setStatus('환자를 <b>처음 밀고 갈 방향</b>을 눌러 주세요. 지도에서 <b>위쪽이 북</b>입니다.');
+}
+function cancelDirection(){
+  $('dirPicker').style.display='none';
+  $('startTransportBtn').style.display='';
+  setStatus('이송 시작이 취소되었습니다.');
+}
+async function beginTransport(dirKey){
+  if(!lastRoutePts || lastRoutePts.length<2) return;
+  $('dirPicker').style.display='none';
   transportActive=true;
   transportInElevator=false;
   lastFrameTime=null;
@@ -1007,8 +987,12 @@ async function startTransport(){
   legStartTime=performance.now(); dwellCandidateId=null; dwellStartTime=0;
   stuckMoving=false; stuckWindowAdvance=0;
   setCorridorPos(lastRoutePts[0]);
-  estHeadingRad=Math.atan2(lastRoutePts[1].y-lastRoutePts[0].y, lastRoutePts[1].x-lastRoutePts[0].x);
-  routeHintRad=estHeadingRad; lastDirSign=1;
+  estHeadingRad = DIR_RAD[dirKey] != null ? DIR_RAD[dirKey]
+                : Math.atan2(lastRoutePts[1].y-lastRoutePts[0].y, lastRoutePts[1].x-lastRoutePts[0].x);
+  routeHintRad=Math.atan2(lastRoutePts[1].y-lastRoutePts[0].y, lastRoutePts[1].x-lastRoutePts[0].x);
+  lastDirSign=1;
+  $('meHeading').style.display='';
+  updateHeadingArrow();
   lastHeading=null; lastTurnTime=0; lastOrientTime=0; headingRateDegPerSec=0;
   isMoving=false; lastMotionTime=0; motionEnergy=0; motionAboveSince=0; gravityEst=null;
   gpsLastFix=null; gpsBearingDeg=null; gpsAccuracy=null;
@@ -1056,6 +1040,8 @@ function stopTransport(){
   if(motionHandler){ window.removeEventListener('devicemotion', motionHandler, true); motionHandler=null; }
   if(gpsWatchId!=null && navigator.geolocation){ navigator.geolocation.clearWatch(gpsWatchId); gpsWatchId=null; }
   relocMode=false; $('relocBtn').classList.remove('on');
+  $('meHeading').style.display='none';
+  $('dirPicker').style.display='none';
   $('startTransportBtn').style.display = lastRoutePts ? '' : 'none';
   $('stopTransportBtn').style.display='none';
   $('elevArrivedBtn').style.display='none';
@@ -1067,7 +1053,11 @@ function finishTransport(){
   stopTransport();
   setStatus(`<b>${destName}</b> 도착했습니다. 🎉`);
 }
-$('startTransportBtn').addEventListener('click', startTransport);
+$('startTransportBtn').addEventListener('click', promptDirection);
+$('dirCancelBtn').addEventListener('click', cancelDirection);
+document.querySelectorAll('.dirBtn').forEach(b=>{
+  b.addEventListener('click', ()=>beginTransport(b.dataset.dir));
+});
 $('stopTransportBtn').addEventListener('click', ()=>{ stopTransport(); placeMe(); });
 $('elevArrivedBtn').addEventListener('click', ()=>{ if(transportInElevator) completeElevatorArrival(); });
 $('relocBtn').addEventListener('click', ()=>{
@@ -1082,14 +1072,11 @@ function renderAll(){
   // 층 이미지 로드 완료 때마다 걸리는 이 콜백이 startId 기준 위치로 되돌려버리면 안 된다.
   if(transportActive) return;
   if(startId) placeMe();
-  if(calMode) renderCal();
 }
-const NS='http://www.w3.org/2000/svg';
 
 /* ── 일반 모드: 지도 클릭 → 가장 가까운 시설 선택 ── */
 overlay.addEventListener('click', e=>{
   const p=evtToImg(e);
-  if(calMode){ calClick(p); return; }
   if(relocMode && transportActive){
     // 추정 위치가 실제와 어긋났을 때, 이송 요원이 직접 현재 위치를 찍어 되돌린다.
     setCorridorPos(p);
@@ -1146,114 +1133,6 @@ $('endSel').addEventListener('change', e=>{
   endFloor=f; endId=id;
 });
 $('floorSel').addEventListener('change', e=> loadFloor(e.target.value));
-
-/* ════════ 보정 모드 ════════ */
-$('calBtn').addEventListener('click', ()=>{
-  calMode=!calMode;
-  $('calBtn').classList.toggle('on',calMode);
-  $('calPanel').classList.toggle('on',calMode);
-  stage.classList.toggle('cal',calMode);
-  $('calPts').style.display = calMode?'':'none';
-  $('corLine').style.display = calMode?'':'none';
-  $('corPts').style.display = calMode?'':'none';
-  if(calMode){ renderCal(); dumpJson(); }
-});
-$('modeLoc').addEventListener('click', ()=>setSub('loc'));
-$('modeCor').addEventListener('click', ()=>setSub('cor'));
-function setSub(m){
-  calSubMode=m;
-  $('modeLoc').classList.toggle('on',m==='loc');
-  $('modeCor').classList.toggle('on',m==='cor');
-  $('calSel').style.display = m==='loc'?'':'none';
-  $('corUndo').style.display = m==='cor'?'':'none';
-  $('corClear').style.display = m==='cor'?'':'none';
-}
-function calClick(p){
-  if(calSubMode==='loc'){
-    const id=$('calSel').value;
-    if(!id){ alert('먼저 보정할 시설을 선택하세요.'); return; }
-    const c=toPct(p.x,p.y);
-    L[id].x=c.x; L[id].y=c.y; L[id].set=true;
-    refreshSelects(); renderCal(); dumpJson(); renderAll();
-  } else {
-    CAL.corridor.push(toPct(p.x,p.y));
-    corridorVersion++;                    // 주행용 그래프 캐시 무효화
-    renderCal(); dumpJson();
-  }
-}
-$('corUndo').addEventListener('click', ()=>{ CAL.corridor.pop(); corridorVersion++; renderCal(); dumpJson(); });
-$('corClear').addEventListener('click', ()=>{
-  if(confirm('복도 경로를 모두 지울까요?')){ CAL.corridor.length=0; corridorVersion++; renderCal(); dumpJson(); }
-});
-
-function renderCal(){
-  // 위치 점
-  const g=$('calPts'); g.innerHTML='';
-  for(const id of ids){
-    const p=px(L[id]);
-    const c=document.createElementNS(NS,'circle');
-    c.setAttribute('class','cal-pt'+(L[id].set?'':' unset'));
-    c.setAttribute('cx',p.x); c.setAttribute('cy',p.y); c.setAttribute('r',7);
-    c.dataset.id=id;
-    enableDrag(c, (nx,ny)=>{
-      const pc=toPct(nx,ny); L[id].x=pc.x; L[id].y=pc.y; L[id].set=true;
-      refreshSelects(); dumpJson(); renderAll();
-    });
-    const t=document.createElementNS(NS,'text');
-    t.setAttribute('class','cal-label');
-    t.setAttribute('x',p.x+10); t.setAttribute('y',p.y-8);
-    t.textContent=L[id].name;
-    g.appendChild(c); g.appendChild(t);
-  }
-  // 복도
-  const C=CAL.corridor.map(px);
-  $('corLine').setAttribute('points', C.map(p=>`${p.x},${p.y}`).join(' '));
-  const cg=$('corPts'); cg.innerHTML='';
-  CAL.corridor.forEach((cp,i)=>{
-    const p=px(cp);
-    const c=document.createElementNS(NS,'circle');
-    c.setAttribute('class','cor-pt');
-    c.setAttribute('cx',p.x); c.setAttribute('cy',p.y); c.setAttribute('r',6);
-    enableDrag(c,(nx,ny)=>{
-      const pc=toPct(nx,ny); CAL.corridor[i]=pc; corridorVersion++;
-      $('corLine').setAttribute('points', CAL.corridor.map(q=>{const w=px(q);return `${w.x},${w.y}`}).join(' '));
-      dumpJson();
-    });
-    cg.appendChild(c);
-  });
-}
-function enableDrag(el,onMove){
-  let drag=false;
-  el.addEventListener('pointerdown',e=>{drag=true; el.setPointerCapture(e.pointerId); e.stopPropagation();});
-  el.addEventListener('pointermove',e=>{
-    if(!drag) return;
-    const p=evtToImg(e);
-    el.setAttribute('cx',p.x); el.setAttribute('cy',p.y);
-    onMove(p.x,p.y);
-  });
-  el.addEventListener('pointerup',e=>{drag=false; renderCal();});
-  el.addEventListener('click',e=>e.stopPropagation());
-}
-
-/* JSON 내보내기 / 적용 */
-function dumpJson(){
-  $('calJson').value = JSON.stringify({locations:L, corridor:CAL.corridor}, null, 1);
-}
-$('exportBtn').addEventListener('click', async ()=>{
-  dumpJson();
-  try{ await navigator.clipboard.writeText($('calJson').value);
-       setStatus(`좌표 JSON이 클립보드에 복사되었습니다. FLOORS_DATA["${currentFloor}"] 값에 붙여넣으세요.`); }
-  catch{ $('calJson').select(); setStatus('아래 텍스트를 직접 복사해 주세요.'); }
-});
-$('importBtn').addEventListener('click', ()=>{
-  try{
-    const d=JSON.parse($('calJson').value);
-    if(d.locations) Object.assign(L,d.locations);
-    if(Array.isArray(d.corridor)){ CAL.corridor.length=0; CAL.corridor.push(...d.corridor); corridorVersion++; }
-    refreshSelects(); renderCal(); renderAll();
-    setStatus('JSON이 적용되었습니다.');
-  }catch(err){ alert('JSON 파싱 오류: '+err.message); }
-});
 
 /* ── 초기화 ── */
 fillFloorSel();
