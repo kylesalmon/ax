@@ -330,8 +330,14 @@ function loadFloor(key, opts){
 }
 
 /* ── 다른 층 목적지: 엘리베이터 이동 연출 ── */
+const MAIN_ELEV_RE = /전용/;   // "지하3층 MRI실 전용 엘리베이터"를 기본(정식) 루트 엘리베이터로 우선 사용
+function findAllElevatorIds(){
+  return ids.filter(id=>ELEV_RE.test(L[id].name));
+}
 function findElevatorId(){
-  return ids.find(id=>ELEV_RE.test(L[id].name));
+  const all = findAllElevatorIds();
+  if(!all.length) return undefined;
+  return all.find(id=>MAIN_ELEV_RE.test(L[id].name)) || all[0];
 }
 function runElevatorTransition(destFloor, destId){
   if(elevatorBusy) return;
@@ -482,9 +488,12 @@ const ARRIVE_DIST_PX = 16;           // 목적지와 이 거리(px) 이내면 �
 const ELEV_ARRIVE_DIST_PX = 22;      // 엘리베이터 위치와 이 거리 이내면 "탑승"으로 판정
 const MIN_TRAVEL_BEFORE_ARRIVE_PX = 60;  // 출발지가 우연히 목적지 근처라도 "즉시 도착" 안 되도록, 최소 이 거리는 실제로 이동해야 도착 판정 시작
 const MIN_LEG_MS = 3000;                 // 각 구간(출발→엘리베이터, 엘리베이터→목적지)마다 최소 이 시간은 지나야 도착 판정 시작
+const DWELL_RADIUS_PX = 55;              // 목표가 아닌 엘리베이터로부터 이 거리 이내
+const DWELL_MS = 3000;                   // 이 시간 이상 머무르면 "그 엘리베이터를 탔다"고 보고 목표 변경
 
 let transportActive=false, transportRAF=null, lastFrameTime=null;
 let freeX=0, freeY=0, estHeadingRad=0, traveledDist=0, legStartTime=0;
+let dwellCandidateId=null, dwellStartTime=0;
 let lastHeading=null, lastTurnTime=0;
 let gyroHandler=null, motionHandler=null;
 let isMoving=false, lastMotionTime=0, motionEnergy=0;
@@ -515,11 +524,29 @@ function transportTick(now){
   const p={x:freeX, y:freeY};
   $('meDot').style.display='';
   $('meDot').setAttribute('transform',`translate(${p.x},${p.y})`);
+  // 목표 엘리베이터가 아닌 "다른" 엘리베이터 근처에 일정 시간 머무르면,
+  // 실제로는 그 엘리베이터를 탄 것으로 보고 목표를 그쪽으로 바꾼다.
+  if(transportNeedsElevator){
+    const other = findAllElevatorIds().find(id=>{
+      if(id===transportTargetId) return false;
+      const q=px(L[id]);
+      return Math.hypot(q.x-p.x, q.y-p.y) <= DWELL_RADIUS_PX;
+    });
+    if(other){
+      if(dwellCandidateId!==other){ dwellCandidateId=other; dwellStartTime=now; }
+      else if(now-dwellStartTime >= DWELL_MS && transportTargetId!==other){
+        transportTargetId=other;
+        setStatus(`↪ <b>${L[other].name}</b> 근처에 머물러 목표를 이쪽으로 변경했습니다.`);
+      }
+    } else {
+      dwellCandidateId=null;
+    }
+  }
   const targetP = px(L[transportTargetId]);
   updateRouteLineFrom(p, targetP);
   const distLeft=Math.hypot(targetP.x-p.x, targetP.y-p.y);
   const moveNote = !motionHandler ? ' (센서 없이 속도 추정만)' : (isMoving ? '' : ' — 정지 중');
-  const legNote = transportNeedsElevator ? ' (엘리베이터로 이동 중)' : '';
+  const legNote = transportNeedsElevator ? ` (${L[transportTargetId].name}로 이동 중)` : '';
   $('transportStatus').textContent = `🚶 이동 중...${moveNote}${legNote}`;
   const arriveThresh = transportNeedsElevator ? ELEV_ARRIVE_DIST_PX : ARRIVE_DIST_PX;
   const legReady = traveledDist >= MIN_TRAVEL_BEFORE_ARRIVE_PX && (now-legStartTime) >= MIN_LEG_MS;
@@ -557,7 +584,7 @@ function beginElevatorLeg(){
       estHeadingRad=Math.atan2(destP.y-freeY, destP.x-freeX);
       lastFrameTime=null;
       traveledDist=0;
-      legStartTime=performance.now();
+      legStartTime=performance.now(); dwellCandidateId=null; dwellStartTime=0;
       isMoving=false; lastMotionTime=0; motionEnergy=0;
       $('meDot').style.display='';
       $('meDot').setAttribute('transform',`translate(${freeX},${freeY})`);
@@ -625,7 +652,7 @@ async function startTransport(){
   transportInElevator=false;
   lastFrameTime=null;
   traveledDist=0;
-  legStartTime=performance.now();
+  legStartTime=performance.now(); dwellCandidateId=null; dwellStartTime=0;
   freeX=lastRoutePts[0].x; freeY=lastRoutePts[0].y;
   estHeadingRad=Math.atan2(lastRoutePts[1].y-lastRoutePts[0].y, lastRoutePts[1].x-lastRoutePts[0].x);
   lastHeading=null; lastTurnTime=0;
