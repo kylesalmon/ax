@@ -484,6 +484,7 @@ const TURN_MIN_INTERVAL_MS = 900;    // 연속 오검출 방지용 최소 간격
 const MOTION_THRESHOLD = 1.0;        // 이 값 이상의 흔들림 에너지(m/s^2)면 "움직이는 중"
 const MOTION_STOP_DELAY_MS = 350;    // 흔들림이 멈춘 뒤 이 시간 지나야 "정지"로 판정 (너무 짧으면 순간끊김, 너무 길면 굼뜸)
 const ROTATION_SUPPRESS_DEGPS = 70;  // 이 각속도(도/초) 이상으로 "회전 중"이면 그 순간의 가속도는 이동판정에 반영 안 함
+const HEADING_FREEZE_DEGPS = 35;     // 방향이 이 속도(도/초) 이상으로 바뀌는 중이면, 가속도계 판정과 무관하게 전진 자체를 멈춘다(제자리 회전이 이동으로 누적되는 것 방지)
 const ARRIVE_DIST_PX = 16;           // 목적지와 이 거리(px) 이내면 도착 처리
 const ELEV_ARRIVE_DIST_PX = 22;      // 엘리베이터 위치와 이 거리 이내면 "탑승"으로 판정
 const MIN_TRAVEL_BEFORE_ARRIVE_PX = 60;  // 출발지가 우연히 목적지 근처라도 "즉시 도착" 안 되도록, 최소 이 거리는 실제로 이동해야 도착 판정 시작
@@ -494,7 +495,7 @@ const DWELL_MS = 3000;                   // 이 시간 이상 머무르면 "그 
 let transportActive=false, transportRAF=null, lastFrameTime=null;
 let freeX=0, freeY=0, estHeadingRad=0, traveledDist=0, legStartTime=0;
 let dwellCandidateId=null, dwellStartTime=0;
-let lastHeading=null, lastTurnTime=0;
+let lastHeading=null, lastTurnTime=0, lastOrientTime=0, headingRateDegPerSec=0;
 let gyroHandler=null, motionHandler=null;
 let isMoving=false, lastMotionTime=0, motionEnergy=0;
 let gravityEst=null;
@@ -515,7 +516,9 @@ function transportTick(now){
   const dt=(now-lastFrameTime)/1000;
   lastFrameTime=now;
   if(motionHandler && now-lastMotionTime>MOTION_STOP_DELAY_MS) isMoving=false;
-  if(isMoving || !motionHandler){   // 가속도계가 아예 없으면 감지 없이 그냥 전진(폴백)
+  headingRateDegPerSec *= 0.85;   // 다음 방향센서 이벤트가 없으면 점점 감쇠(=회전이 멈췄다고 간주)
+  const rotatingNow = headingRateDegPerSec > HEADING_FREEZE_DEGPS;
+  if((isMoving || !motionHandler) && !rotatingNow){   // 회전 중엔 가속도계 판정과 무관하게 전진 정지
     const step=TRANSPORT_SPEED_PXPS*dt;
     freeX += Math.cos(estHeadingRad)*step;
     freeY += Math.sin(estHeadingRad)*step;
@@ -545,7 +548,7 @@ function transportTick(now){
   const targetP = px(L[transportTargetId]);
   updateRouteLineFrom(p, targetP);
   const distLeft=Math.hypot(targetP.x-p.x, targetP.y-p.y);
-  const moveNote = !motionHandler ? ' (센서 없이 속도 추정만)' : (isMoving ? '' : ' — 정지 중');
+  const moveNote = rotatingNow ? ' — 회전 중 (전진 일시정지)' : (!motionHandler ? ' (센서 없이 속도 추정만)' : (isMoving ? '' : ' — 정지 중'));
   const legNote = transportNeedsElevator ? ` (${L[transportTargetId].name}로 이동 중)` : '';
   $('transportStatus').textContent = `🚶 이동 중...${moveNote}${legNote}`;
   const arriveThresh = transportNeedsElevator ? ELEV_ARRIVE_DIST_PX : ARRIVE_DIST_PX;
@@ -605,17 +608,20 @@ function snapHeadingTo90(){
 function onDeviceOrientation(e){
   const heading = (e.webkitCompassHeading!=null) ? e.webkitCompassHeading : e.alpha;
   if(heading==null) return;
+  const now=performance.now();
   if(lastHeading!=null){
     let diff=heading-lastHeading;
     diff=((diff+540)%360)-180;
     estHeadingRad += diff*Math.PI/180;   // 상대 회전 누적 → 추정 진행방향 갱신
-    const now=performance.now();
+    const dtMs=Math.max(1, now-lastOrientTime);
+    headingRateDegPerSec = Math.abs(diff)/(dtMs/1000);   // 지금 얼마나 빠르게 방향을 돌리고 있는지
     if(Math.abs(diff)>TURN_ANGLE_THRESHOLD && (now-lastTurnTime)>TURN_MIN_INTERVAL_MS){
       lastTurnTime=now;
       snapHeadingTo90();
     }
   }
   lastHeading=heading;
+  lastOrientTime=now;
 }
 function onDeviceMotion(e){
   // 회전 중(제자리에서 몸을 돌리는 중)에는 그 순간의 가속도 튐을 "이동"으로 오인하지 않게 억제.
@@ -655,7 +661,7 @@ async function startTransport(){
   legStartTime=performance.now(); dwellCandidateId=null; dwellStartTime=0;
   freeX=lastRoutePts[0].x; freeY=lastRoutePts[0].y;
   estHeadingRad=Math.atan2(lastRoutePts[1].y-lastRoutePts[0].y, lastRoutePts[1].x-lastRoutePts[0].x);
-  lastHeading=null; lastTurnTime=0;
+  lastHeading=null; lastTurnTime=0; lastOrientTime=0; headingRateDegPerSec=0;
   isMoving=false; lastMotionTime=0; motionEnergy=0; gravityEst=null;
   if(endFloor && endFloor!==currentFloor){
     const elevId=findElevatorId();
