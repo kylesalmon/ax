@@ -454,58 +454,38 @@ function placeDest(){
 }
 function setStatus(html){ $('status').innerHTML=html; }
 
-/* ════════ 이송 시뮬레이션 (실제 움직임 감지 + 자이로 회전보정) ════════
-   자이로(방향센서)는 "어느 쪽을 보고 있나"만 알려줄 뿐 "움직이는 중인가"는
-   알려주지 않는다. "움직일 때만 전진"하려면 가속도계(accelerometer)로
-   흔들림/진동 에너지를 측정해서 움직임 여부를 판정해야 한다.
-   → 가속도계로 움직임 유무 감지(정지해 있으면 점도 멈춤) +
-     가정 속도로 전진(움직이는 동안만) +
-     자이로로 실제 회전을 감지하면 경로상 다음 회전 지점으로 스냅 보정. ════════ */
+/* ════════ 이송 시뮬레이션 (자유 추측항법 + 실시간 재탐색) ════════
+   빨간점을 정해진 초록 경로 위에 강제로 묶지 않는다. 대신:
+   - 가속도계로 "움직이는 중"일 때만 추정 방향으로 전진 (추측항법/dead-reckoning)
+   - 자이로의 방향 변화(상대값)를 계속 누적해서 "지금 어디를 보고 있는지" 추정
+   - 매 프레임, 추정 위치 → 목적지로 경로(초록선)를 조용히 다시 계산해서 표시
+     (팝업/확인 UI 없음 — 그냥 선이 알아서 다시 그려짐)
+   실제 절대위치가 아니라 추정치라 시간이 지날수록 오차가 쌓이는 건 한계이며,
+   자이로가 큰 회전을 감지할 때마다 추정 방향을 가까운 90도 단위로 스냅해
+   오차 누적을 줄인다(복도가 대체로 직각인 점을 이용). ════════ */
 const TRANSPORT_SPEED_PXPS = 40;     // 움직이는 동안의 가정 속도 (px/sec, 지도 스케일 기준 튜닝값)
-const TURN_ANGLE_THRESHOLD = 28;     // 이 각도(도) 이상 방향이 바뀌면 "회전"으로 판정
+const TURN_ANGLE_THRESHOLD = 28;     // 이 각도(도) 이상 방향이 바뀌면 "회전"으로 판정(90도 스냅 트리거)
 const TURN_MIN_INTERVAL_MS = 1200;   // 연속 오검출 방지용 최소 간격
-const MOTION_THRESHOLD = 1.0;        // 이 값 이상의 흔들림 에너지(m/s^2)면 "움직이는 중" (0.7→너무 예민, 1.4→너무 둔감, 그 사이로 조정)
+const MOTION_THRESHOLD = 1.0;        // 이 값 이상의 흔들림 에너지(m/s^2)면 "움직이는 중"
 const MOTION_STOP_DELAY_MS = 600;    // 흔들림이 멈춘 뒤 이 시간 지나야 "정지"로 판정 (순간 끊김 방지)
+const ARRIVE_DIST_PX = 16;           // 목적지와 이 거리(px) 이내면 도착 처리
 
-let transportActive=false, transportRAF=null;
-let transportSegLens=[], transportCum=[0], transportTotal=0, transportTurns=[];
-let transportDist=0, lastFrameTime=null;
+let transportActive=false, transportRAF=null, lastFrameTime=null;
+let freeX=0, freeY=0, estHeadingRad=0;
 let lastHeading=null, lastTurnTime=0;
 let gyroHandler=null, motionHandler=null;
 let isMoving=false, lastMotionTime=0, motionEnergy=0;
 let gravityEst=null;
 
-function buildTransportModel(pts){
-  transportSegLens=[]; transportCum=[0]; transportTurns=[];
-  let cum=0;
-  for(let i=0;i<pts.length-1;i++){
-    const len=Math.hypot(pts[i+1].x-pts[i].x, pts[i+1].y-pts[i].y);
-    transportSegLens.push(len);
-    cum+=len;
-    transportCum.push(cum);
-  }
-  transportTotal=cum;
-  for(let i=1;i<pts.length-1;i++){
-    const a1=Math.atan2(pts[i].y-pts[i-1].y, pts[i].x-pts[i-1].x);
-    const a2=Math.atan2(pts[i+1].y-pts[i].y, pts[i+1].x-pts[i].x);
-    let diff=(a2-a1)*180/Math.PI;
-    diff=((diff+540)%360)-180;
-    if(Math.abs(diff) > 20) transportTurns.push({cumDist: transportCum[i]});
-  }
-}
-function transportPointAt(dist){
-  const pts=lastRoutePts;
-  if(dist<=0) return pts[0];
-  if(dist>=transportTotal) return pts[pts.length-1];
-  for(let i=0;i<transportSegLens.length;i++){
-    if(dist <= transportCum[i+1]){
-      const segLen=transportSegLens[i]||1;
-      const t=(dist-transportCum[i])/segLen;
-      const a=pts[i], b=pts[i+1];
-      return {x:a.x+(b.x-a.x)*t, y:a.y+(b.y-a.y)*t};
-    }
-  }
-  return pts[pts.length-1];
+function transportPointAt(){ return {x:freeX, y:freeY}; }
+function updateRouteLineFrom(pointA){
+  const destP = px(L[endId]);
+  const mid = corridorPathBetween(pointA, destP);
+  const pts=[pointA, ...mid, destP].filter((p,i,arr)=> i===0 ||
+    Math.hypot(p.x-arr[i-1].x, p.y-arr[i-1].y) > 2);
+  const d = pts.map((p,i)=>`${i?'L':'M'}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
+  $('routePath').setAttribute('d', d);
+  $('routeCasing').setAttribute('d', d);
 }
 function transportTick(now){
   if(!transportActive) return;
@@ -514,25 +494,25 @@ function transportTick(now){
   lastFrameTime=now;
   if(motionHandler && now-lastMotionTime>MOTION_STOP_DELAY_MS) isMoving=false;
   if(isMoving || !motionHandler){   // 가속도계가 아예 없으면 감지 없이 그냥 전진(폴백)
-    transportDist=Math.min(transportTotal, transportDist+dt*TRANSPORT_SPEED_PXPS);
+    freeX += Math.cos(estHeadingRad)*TRANSPORT_SPEED_PXPS*dt;
+    freeY += Math.sin(estHeadingRad)*TRANSPORT_SPEED_PXPS*dt;
   }
-  const p=transportPointAt(transportDist);
+  const p=transportPointAt();
   $('meDot').style.display='';
   $('meDot').setAttribute('transform',`translate(${p.x},${p.y})`);
-  const pct = transportTotal>0 ? Math.round(transportDist/transportTotal*100) : 100;
+  updateRouteLineFrom(p);
+  const destP=px(L[endId]);
+  const distLeft=Math.hypot(destP.x-p.x, destP.y-p.y);
   const moveNote = !motionHandler ? ' (센서 없이 속도 추정만)' : (isMoving ? '' : ' — 정지 중');
-  $('transportStatus').textContent = `🚶 이동 중... ${pct}%${moveNote}`;
-  if(transportDist>=transportTotal){ finishTransport(); return; }
+  $('transportStatus').textContent = `🚶 이동 중...${moveNote}`;
+  if(distLeft <= ARRIVE_DIST_PX){ finishTransport(); return; }
   transportRAF=requestAnimationFrame(transportTick);
 }
-function handleTurnDetected(){
-  if(!transportActive) return;
-  let target=null;
-  for(const t of transportTurns){ if(t.cumDist > transportDist-15){ target=t; break; } }
-  if(target){
-    transportDist=target.cumDist;
-    $('transportStatus').textContent = `↪ 회전 감지 — 위치 보정됨 (${Math.round(target.cumDist/transportTotal*100)}%)`;
-  }
+function snapHeadingTo90(){
+  const deg=estHeadingRad*180/Math.PI;
+  const snapped=Math.round(deg/90)*90;
+  estHeadingRad=snapped*Math.PI/180;
+  $('transportStatus').textContent = '↪ 회전 감지 — 방향 보정됨';
 }
 function onDeviceOrientation(e){
   const heading = (e.webkitCompassHeading!=null) ? e.webkitCompassHeading : e.alpha;
@@ -540,10 +520,11 @@ function onDeviceOrientation(e){
   if(lastHeading!=null){
     let diff=heading-lastHeading;
     diff=((diff+540)%360)-180;
+    estHeadingRad += diff*Math.PI/180;   // 상대 회전 누적 → 추정 진행방향 갱신
     const now=performance.now();
     if(Math.abs(diff)>TURN_ANGLE_THRESHOLD && (now-lastTurnTime)>TURN_MIN_INTERVAL_MS){
       lastTurnTime=now;
-      handleTurnDetected();
+      snapHeadingTo90();
     }
   }
   lastHeading=heading;
@@ -566,9 +547,10 @@ function onDeviceMotion(e){
 }
 async function startTransport(){
   if(!lastRoutePts || lastRoutePts.length<2) return;
-  buildTransportModel(lastRoutePts);
   transportActive=true;
-  transportDist=0; lastFrameTime=null;
+  lastFrameTime=null;
+  freeX=lastRoutePts[0].x; freeY=lastRoutePts[0].y;
+  estHeadingRad=Math.atan2(lastRoutePts[1].y-lastRoutePts[0].y, lastRoutePts[1].x-lastRoutePts[0].x);
   lastHeading=null; lastTurnTime=0;
   isMoving=false; lastMotionTime=0; motionEnergy=0; gravityEst=null;
   $('startTransportBtn').style.display='none';
@@ -587,9 +569,9 @@ async function startTransport(){
     } else if(window.DeviceOrientationEvent){
       gyroHandler=onDeviceOrientation; window.addEventListener('deviceorientation', gyroHandler, true);
     }
-    if(!motionHandler) $('transportStatus').textContent = '🚶 이동 중... 0% (센서 미지원/거부 — 속도 추정만)';
+    if(!motionHandler) $('transportStatus').textContent = '🚶 이동 중... (센서 미지원/거부 — 속도 추정만)';
   }catch(err){
-    $('transportStatus').textContent = '🚶 이동 중... 0% (센서 사용 불가 — 속도 추정만)';
+    $('transportStatus').textContent = '🚶 이동 중... (센서 사용 불가 — 속도 추정만)';
   }
   transportRAF=requestAnimationFrame(transportTick);
 }
