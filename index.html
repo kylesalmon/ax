@@ -502,10 +502,10 @@ let gravityEst=null;
 let transportTargetId=null, transportNeedsElevator=false, transportInElevator=false;
 
 function updateRouteLineFrom(pointA, destP){
-  const mid = corridorPathBetween(pointA, destP);
-  const pts=[pointA, ...mid, destP].filter((p,i,arr)=> i===0 ||
-    Math.hypot(p.x-arr[i-1].x, p.y-arr[i-1].y) > 2);
-  const d = pts.map((p,i)=>`${i?'L':'M'}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
+  // 실시간 재탐색 중엔 층마다 기본값으로 깔린 가짜 단일 직선 복도(corridorPathBetween)를
+  // 거치게 하면, 목적지에 가까워질수록 오히려 수직으로 꺾인 사각형 모양이 되어 부자연스럽다.
+  // 실제 복도망 데이터가 없는 지금은, 현재 추정 위치→목적지 직선이 최단 경로에 가장 가깝다.
+  const d = `M${pointA.x.toFixed(1)},${pointA.y.toFixed(1)} L${destP.x.toFixed(1)},${destP.y.toFixed(1)}`;
   $('routePath').setAttribute('d', d);
   $('routeCasing').setAttribute('d', d);
 }
@@ -572,7 +572,7 @@ function beginElevatorLeg(){
   seq.push(destFloor);
   let i=0;
   $('transportStatus').textContent = `🛗 ${FLOORS_DATA[seq[0]].label}에서 이동 중...`;
-  const stepMs = Math.max(280, 2000/seq.length);
+  const stepMs = 700;   // 층마다 고정 시간 — 층 수가 많아도 각 층 표시가 눈에 보이도록 (총 시간을 나눠쓰지 않음)
   const timer=setInterval(()=>{
     i++;
     if(i>=seq.length){
@@ -606,7 +606,11 @@ function snapHeadingTo90(){
   estHeadingRad=snapped*Math.PI/180;
 }
 function onDeviceOrientation(e){
-  const heading = (e.webkitCompassHeading!=null) ? e.webkitCompassHeading : e.alpha;
+  // iOS의 webkitCompassHeading은 나침반처럼 "시계방향"으로 증가하지만,
+  // 표준 DeviceOrientationEvent.alpha는 스펙상 "반시계방향"으로 증가한다.
+  // 두 값을 그대로 섞어 쓰면 안드로이드/아이폰 중 한쪽에서 회전 방향이 좌우로 뒤집혀 보인다.
+  // → alpha를 쓸 땐 방향을 뒤집어(360-alpha) 항상 "시계방향 증가" 기준으로 통일한다.
+  const heading = (e.webkitCompassHeading!=null) ? e.webkitCompassHeading : (e.alpha!=null ? (360-e.alpha)%360 : null);
   if(heading==null) return;
   const now=performance.now();
   if(lastHeading!=null){
