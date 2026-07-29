@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SMC 원내 길찾기 · 본관 1F</title>
+<style>
+  :root{
+    --ink:#12263a; --ink-soft:#41586f;
+    --paper:#eef1f4; --panel:#fff; --line:#d3dae1;
+    --accent:#0a6e5c; --me:#e02424; --cal:#1e6fd9; --gate:#f5c04e;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Pretendard','Apple SD Gothic Neo','Malgun Gothic',system-ui,sans-serif;
+       background:var(--paper); color:var(--ink)}
+  header{background:var(--ink); color:#fff; padding:13px 22px;
+         display:flex; align-items:center; gap:12px; flex-wrap:wrap}
+  header h1{font-size:18px; font-weight:700}
+  .floor-badge{background:var(--gate); color:var(--ink); font-weight:800;
+               padding:2px 10px; border-radius:4px; font-size:14px}
+  header .sub{font-size:12px; opacity:.7}
+  .wrap{max-width:1400px; margin:0 auto; padding:16px 20px 40px}
+
+  /* ── 조작부 ── */
+  .controls{background:var(--panel); border:1px solid var(--line); border-radius:12px;
+            padding:14px 16px; display:flex; gap:12px; align-items:flex-end; flex-wrap:wrap;
+            box-shadow:0 1px 3px rgba(18,38,58,.06)}
+  .field{display:flex; flex-direction:column; gap:5px; min-width:230px; flex:1}
+  .field label{font-size:12px; font-weight:700; color:var(--ink-soft)}
+  .field label .dot{display:inline-block; width:9px; height:9px; border-radius:50%;
+                    margin-right:5px; vertical-align:1px}
+  .dot.red{background:var(--me)} .dot.green{background:var(--accent)}
+  select{appearance:none; width:100%; padding:10px 34px 10px 12px; font-size:15px;
+         border:1.5px solid var(--line); border-radius:8px; color:var(--ink); cursor:pointer;
+         background:#fff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%2341586f' stroke-width='2' fill='none'/%3E%3C/svg%3E") no-repeat right 12px center}
+  select:focus{outline:2px solid var(--accent); outline-offset:1px}
+  button{padding:10px 18px; font-size:14.5px; font-weight:700; border-radius:8px;
+         cursor:pointer; border:1.5px solid transparent}
+  button:focus-visible{outline:2px solid var(--ink); outline-offset:2px}
+  #findBtn{background:var(--accent); color:#fff}
+  #findBtn:hover{filter:brightness(1.08)}
+  #resetBtn{background:#fff; color:var(--ink-soft); border-color:var(--line)}
+  #calBtn{background:#fff; color:var(--cal); border-color:var(--cal)}
+  #calBtn.on{background:var(--cal); color:#fff}
+  .statusbar{margin-top:10px; font-size:13.5px; color:var(--ink-soft); min-height:20px}
+  .statusbar b{color:var(--ink)}
+
+  /* ── 지도 ── */
+  .map-card{margin-top:14px; background:var(--panel); border:1px solid var(--line);
+            border-radius:12px; overflow:hidden; box-shadow:0 1px 3px rgba(18,38,58,.06)}
+  .map-head{display:flex; justify-content:space-between; align-items:center; gap:10px;
+            padding:9px 16px; border-bottom:1px solid var(--line);
+            font-size:13px; color:var(--ink-soft); flex-wrap:wrap}
+  .legend{display:flex; gap:14px; flex-wrap:wrap}
+  .legend span{display:flex; align-items:center; gap:5px}
+  .legend i{display:inline-block; width:11px; height:11px; border-radius:3px}
+  .map-stage{position:relative; background:#fafbfc}
+  .map-stage img{display:block; width:100%; height:auto; user-select:none; -webkit-user-drag:none}
+  .map-stage svg{position:absolute; inset:0; width:100%; height:100%}
+  .map-stage.cal{cursor:crosshair}
+  #imgError{display:none; padding:40px 24px; text-align:center; color:var(--ink-soft);
+            font-size:14px; line-height:1.8}
+  #imgError code{background:#eef1f4; padding:2px 6px; border-radius:4px; font-size:12.5px}
+
+  #routePath{fill:none; stroke:var(--accent); stroke-width:7; stroke-linecap:round;
+             stroke-linejoin:round; stroke-dasharray:14 11; animation:flow 1.1s linear infinite;
+             opacity:0; filter:drop-shadow(0 1px 2px rgba(0,0,0,.35))}
+  #routePath.on{opacity:1}
+  #routeCasing{fill:none; stroke:#fff; stroke-width:12; stroke-linecap:round;
+               stroke-linejoin:round; opacity:0}
+  #routeCasing.on{opacity:.85}
+  @keyframes flow{to{stroke-dashoffset:-25}}
+  @media (prefers-reduced-motion:reduce){#routePath{animation:none} .pulse{animation:none}}
+
+  .pulse{fill:var(--me); opacity:.35; animation:pulse 1.6s ease-out infinite}
+  @keyframes pulse{0%{r:10;opacity:.45} 70%{r:26;opacity:0} 100%{r:26;opacity:0}}
+
+  .cal-pt{fill:var(--cal); stroke:#fff; stroke-width:2; cursor:grab}
+  .cal-pt.unset{fill:#b8c4cf}
+  .cal-label{font-size:12px; font-weight:700; fill:var(--cal);
+             paint-order:stroke; stroke:#fff; stroke-width:3px; pointer-events:none}
+  .cor-pt{fill:#8a2be2; stroke:#fff; stroke-width:2; cursor:grab}
+  .cor-line{fill:none; stroke:#8a2be2; stroke-width:3; stroke-dasharray:6 6; opacity:.7}
+
+  /* ── 보정 패널 ── */
+  .cal-panel{display:none; margin-top:14px; background:#f0f6ff; border:1.5px solid var(--cal);
+             border-radius:12px; padding:16px 18px}
+  .cal-panel.on{display:block}
+  .cal-panel h2{font-size:15px; color:var(--cal); margin-bottom:8px}
+  .cal-panel p{font-size:13px; color:var(--ink-soft); line-height:1.7; margin-bottom:10px}
+  .cal-row{display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-bottom:10px}
+  .cal-row select{max-width:340px}
+  .cal-mode{display:flex; gap:0; border:1.5px solid var(--cal); border-radius:8px; overflow:hidden}
+  .cal-mode button{border-radius:0; border:none; background:#fff; color:var(--cal); padding:9px 14px}
+  .cal-mode button.on{background:var(--cal); color:#fff}
+  textarea{width:100%; height:130px; font-family:ui-monospace,Consolas,monospace; font-size:12px;
+           border:1px solid var(--line); border-radius:8px; padding:10px; resize:vertical}
+  .cal-actions{display:flex; gap:8px; margin-top:8px; flex-wrap:wrap}
+  .cal-actions button{background:#fff; border-color:var(--cal); color:var(--cal); font-size:13px; padding:8px 14px}
+
+  .notice{margin-top:14px; font-size:12px; color:var(--ink-soft); line-height:1.7}
+  @media (max-width:640px){ .field{min-width:100%} header h1{font-size:16px} }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>원내 길찾기 · 본관</h1>
+  <span class="floor-badge">1F</span>
+  <span class="sub">삼성서울병원 공식 원내지도 기반 · AX 프로그램용</span>
+</header>
+
+<div class="wrap">
+
+  <div class="controls">
+    <div class="field">
+      <label for="startSel"><span class="dot red"></span>현재 위치</label>
+      <select id="startSel"></select>
+    </div>
+    <div class="field">
+      <label for="endSel"><span class="dot green"></span>목적지</label>
+      <select id="endSel"></select>
+    </div>
+    <button id="findBtn">경로 표시</button>
+    <button id="resetBtn">초기화</button>
+    <button id="calBtn">⚙ 보정 모드</button>
+  </div>
+  <div class="statusbar" id="status">현재 위치와 목적지를 선택한 뒤 <b>경로 표시</b>를 누르세요. 지도의 위치를 직접 클릭해도 됩니다.</div>
+
+  <div class="map-card">
+    <div class="map-head">
+      <span id="mapTitle">본관 1층 (공식 원내지도)</span>
+      <div class="legend">
+        <span><i style="background:var(--me);border-radius:50%"></i>현위치</span>
+        <span><i style="background:var(--accent)"></i>이동경로</span>
+        <span><i style="background:var(--cal);border-radius:50%"></i>보정점(보정 모드)</span>
+      </div>
+    </div>
+    <div class="map-stage" id="stage">
+      <img id="mapImg" alt="본관 1층 원내지도" draggable="false">
+      <div id="imgError">
+        지도 이미지를 불러오지 못했습니다.<br>
+        인터넷 연결을 확인하거나, 병원에서 받은 지도 PNG 파일을 이 HTML과 <b>같은 폴더</b>에
+        <code>map_hmain_01.png</code> 이름으로 넣어 주세요. (파일 상단 <code>FLOOR.imgCandidates</code>에서 경로 변경 가능)
+      </div>
+      <svg id="overlay" preserveAspectRatio="none">
+        <polyline id="corLine" class="cor-line" style="display:none"/>
+        <g id="corPts" style="display:none"></g>
+        <path id="routeCasing"/>
+        <path id="routePath"/>
+        <g id="calPts" style="display:none"></g>
+        <g id="destPin" style="display:none">
+          <path d="M0,-34 C-11,-34 -17,-25 -17,-17 C-17,-7 0,7 0,7 C0,7 17,-7 17,-17 C17,-25 11,-34 0,-34 Z"
+                fill="var(--accent)" stroke="#fff" stroke-width="2"/>
+          <circle cx="0" cy="-19" r="5.5" fill="#fff"/>
+        </g>
+        <g id="meDot" style="display:none">
+          <circle class="pulse" r="10"/>
+          <circle r="9" fill="var(--me)" stroke="#fff" stroke-width="3"/>
+        </g>
+      </svg>
+    </div>
+  </div>
+
+  <!-- ── 보정 패널 ── -->
+  <div class="cal-panel" id="calPanel">
+    <h2>위치 보정 모드</h2>
+    <p>
+      <b>위치 지정</b>: 아래에서 시설을 고른 뒤 지도의 실제 위치를 클릭하세요. 파란 점은 드래그로 미세 조정할 수 있습니다.
+      회색 점은 아직 좌표가 확정되지 않은(추정) 시설입니다.<br>
+      <b>복도 경로</b>: 경로선이 지나갈 복도 중심선을 순서대로 클릭해 찍습니다. 경로는 항상 이 선을 따라 그려집니다.<br>
+      보정이 끝나면 <b>좌표 JSON 복사</b> → 이 HTML 파일의 <code>/* ▼▼ CALIBRATION DATA ▼▼ */</code> 블록에 붙여넣으면 영구 반영됩니다.
+    </p>
+    <div class="cal-row">
+      <div class="cal-mode">
+        <button id="modeLoc" class="on">위치 지정</button>
+        <button id="modeCor">복도 경로</button>
+      </div>
+      <select id="calSel"></select>
+      <button id="corUndo" style="display:none">한 점 취소</button>
+      <button id="corClear" style="display:none">복도 전체 지우기</button>
+    </div>
+    <textarea id="calJson" spellcheck="false" placeholder="좌표 JSON이 여기에 표시됩니다"></textarea>
+    <div class="cal-actions">
+      <button id="exportBtn">좌표 JSON 복사</button>
+      <button id="importBtn">JSON 적용 (붙여넣은 내용 반영)</button>
+    </div>
+  </div>
+
+  <p class="notice">
+    ※ 지도 이미지 © 삼성서울병원 — 병원 승인 하에 원내 AX 프로그램 용도로 사용.
+    시설 초기 좌표는 공식 안내 페이지의 배치 설명을 기반으로 한 추정값이므로, 배포 전 보정 모드에서 실제 지도에 맞게 확정하세요.
+  </p>
+</div>
+
+<script>
+/* ════════════════════════════════════════════════════════════════
+   ▼▼ CALIBRATION DATA ▼▼
+   보정 모드에서 "좌표 JSON 복사"로 얻은 내용을 아래 CAL 객체에
+   그대로 붙여넣으면 다음 실행부터 영구 반영됩니다.
+   - locations: { id: {name, x, y, set} }  (x,y는 이미지 크기 대비 %)
+   - corridor : [ {x,y}, ... ]             (경로선이 따라갈 복도 중심선)
+   ════════════════════════════════════════════════════════════════ */
+const CAL = {
+  "locations": {
+    "gate1":  {"name":"게이트1 (서측 출입구)",              "x":3,  "y":50, "set":false},
+    "info":   {"name":"안내 (Information)",                 "x":8,  "y":58, "set":false},
+    "cs":     {"name":"고객상담실",                          "x":9,  "y":32, "set":false},
+    "card":   {"name":"오픈카드 등록창구",                    "x":14, "y":32, "set":false},
+    "store":  {"name":"삼성모바일스토어",                     "x":13, "y":68, "set":false},
+    "elevW":  {"name":"외래 엘리베이터",                      "x":18, "y":68, "set":false},
+    "first":  {"name":"첫 진료상담",                          "x":21, "y":34, "set":false},
+    "gate3":  {"name":"게이트3 (북측 출입구)",                "x":30, "y":12, "set":false},
+    "proton": {"name":"양성자치료센터 연결통로 (지하)",        "x":27, "y":16, "set":false},
+    "us":     {"name":"초음파검사실",                         "x":30, "y":32, "set":false},
+    "inj":    {"name":"외래치료실 (주사실)",                  "x":30, "y":68, "set":false},
+    "imgop":  {"name":"영상운영실",                           "x":35, "y":32, "set":false},
+    "xray":   {"name":"방사선검사실 (X-ray)",                 "x":39, "y":32, "set":false},
+    "ct":     {"name":"CT 검사실",                            "x":44, "y":32, "set":false},
+    "fluoro": {"name":"투시 조영실",                          "x":42, "y":68, "set":false},
+    "angio":  {"name":"혈관 조영실",                          "x":47, "y":68, "set":false},
+    "mri":    {"name":"MRI실",                               "x":50, "y":32, "set":false},
+    "annex":  {"name":"본관-별관 연결통로",                    "x":56, "y":10, "set":false},
+    "npw":    {"name":"음압병동",                             "x":62, "y":26, "set":false},
+    "er":     {"name":"응급실",                               "x":70, "y":26, "set":false},
+    "gate2":  {"name":"게이트2 (동측 출입구)",                "x":78, "y":16, "set":false},
+    "elevE":  {"name":"병동 엘리베이터",                       "x":74, "y":36, "set":false},
+    "elevMri":{"name":"지하3층 MRI실 전용 엘리베이터",         "x":77, "y":40, "set":false},
+    "esc":    {"name":"에스컬레이터",                          "x":66, "y":50, "set":false},
+    "cafe":   {"name":"커피숍 아띠제",                         "x":63, "y":68, "set":false},
+    "pay1":   {"name":"원무수납 1",                            "x":69, "y":68, "set":false},
+    "pay2":   {"name":"원무수납 2",                            "x":73, "y":68, "set":false},
+    "diab":   {"name":"당뇨병센터·내분비대사내과·갑상선센터",   "x":79, "y":68, "set":false},
+    "diabLab":{"name":"당뇨검사실",                            "x":82, "y":72, "set":false},
+    "diabEdu":{"name":"당뇨교육실",                            "x":84, "y":72, "set":false},
+    "pharm":  {"name":"외래약국",                              "x":88, "y":68, "set":false},
+    "blood":  {"name":"혈당검사실",                            "x":91, "y":68, "set":false},
+    "refer":  {"name":"회송상담 / 파트너즈센터",               "x":93, "y":62, "set":false},
+    "record": {"name":"의무기록 / 영상CD 복사창구",            "x":95, "y":58, "set":false},
+    "cdc":    {"name":"감염병센터 (CDC)",                      "x":58, "y":30, "set":false},
+    "im":     {"name":"내과 (감염·류마티스·신장·알레르기·호흡기)","x":24, "y":32, "set":false},
+    "cast":   {"name":"석고실",                                "x":26, "y":68, "set":false},
+    "sports": {"name":"스포츠의학실",                          "x":22, "y":68, "set":false},
+    "otc":    {"name":"장기이식센터",                          "x":86, "y":34, "set":false},
+    "ortho":  {"name":"정형외과 | 척추센터",                    "x":20, "y":30, "set":false},
+    "senior": {"name":"SMC 시니어 라운지",                     "x":54, "y":68, "set":false}
+  },
+  "corridor": [
+    {"x":3,"y":50},{"x":97,"y":50}
+  ]
+};
+/* ════════ ▲▲ CALIBRATION DATA ▲▲ ════════ */
+
+const FLOOR = {
+  key:'1F',
+  title:'본관 1층 (공식 원내지도)',
+  imgCandidates:[
+    'map_hmain_01.png',   // 로컬 파일 우선 (같은 폴더에 두면 오프라인 동작)
+    "http://www.samsunghospital.com/_newhome/ui/home/static/img/info/guide/map/map_hmain_01.png?ver='21'"
+  ]
+};
+
+/* ── 이미지 로드 ── */
+const img = document.getElementById('mapImg');
+const overlay = document.getElementById('overlay');
+const stage = document.getElementById('stage');
+let IW = 1000, IH = 560;              // 이미지 자연 크기 (로드 후 갱신)
+
+function tryLoad(i){
+  if(i >= FLOOR.imgCandidates.length){
+    img.style.display='none';
+    document.getElementById('imgError').style.display='block';
+    // 오류 시에도 오버레이가 동작하도록 기본 비율 유지
+    overlay.setAttribute('viewBox',`0 0 ${IW} ${IH}`);
+    return;
+  }
+  img.onload = ()=>{
+    IW = img.naturalWidth; IH = img.naturalHeight;
+    overlay.setAttribute('viewBox',`0 0 ${IW} ${IH}`);
+    renderAll();
+  };
+  img.onerror = ()=>tryLoad(i+1);
+  img.src = FLOOR.imgCandidates[i];
+}
+tryLoad(0);
+
+/* ── 좌표 변환 (% ↔ 이미지 px) ── */
+const px = p => ({x:p.x/100*IW, y:p.y/100*IH});
+const toPct = (x,y) => ({x:+(x/IW*100).toFixed(2), y:+(y/IH*100).toFixed(2)});
+function evtToImg(e){
+  const r = overlay.getBoundingClientRect();
+  return { x:(e.clientX-r.left)/r.width*IW, y:(e.clientY-r.top)/r.height*IH };
+}
+
+/* ── 상태 ── */
+let startId='gate1', endId='';
+let calMode=false, calSubMode='loc';   // 'loc' | 'cor'
+const $ = id=>document.getElementById(id);
+const L = CAL.locations;
+
+/* ── 셀렉트 ── */
+const ids = Object.keys(L);
+const sortedIds = [...ids].sort((a,b)=>L[a].name.localeCompare(L[b].name,'ko'));
+function fillSel(sel, ph){
+  sel.innerHTML = `<option value="">${ph}</option>` +
+    sortedIds.map(id=>`<option value="${id}">${L[id].name}${L[id].set?'':' *'}</option>`).join('');
+}
+function refreshSelects(){
+  const s=$('startSel').value, e=$('endSel').value, c=$('calSel').value;
+  fillSel($('startSel'),'현재 위치 선택'); fillSel($('endSel'),'목적지 선택'); fillSel($('calSel'),'보정할 시설 선택');
+  $('startSel').value=s||startId; $('endSel').value=e; $('calSel').value=c;
+}
+refreshSelects();
+$('startSel').value='gate1';
+
+/* ── 복도 폴리라인 위 최단 경로 ── */
+function projectOnSeg(p,a,b){
+  const dx=b.x-a.x, dy=b.y-a.y, len2=dx*dx+dy*dy;
+  if(!len2) return {t:0, pt:{...a}, d:Math.hypot(p.x-a.x,p.y-a.y)};
+  let t=((p.x-a.x)*dx+(p.y-a.y)*dy)/len2; t=Math.max(0,Math.min(1,t));
+  const pt={x:a.x+t*dx, y:a.y+t*dy};
+  return {t, pt, d:Math.hypot(p.x-pt.x,p.y-pt.y)};
+}
+function projectOnCorridor(p){
+  const C = CAL.corridor.map(px);
+  let best=null;
+  for(let i=0;i<C.length-1;i++){
+    const r=projectOnSeg(p,C[i],C[i+1]);
+    if(!best || r.d<best.d) best={...r, seg:i};
+  }
+  return best; // {seg, t, pt}
+}
+function corridorPathBetween(pa,pb){
+  const C = CAL.corridor.map(px);
+  const a=projectOnCorridor(pa), b=projectOnCorridor(pb);
+  if(!a||!b) return [pa,pb];
+  let fwd=a, bwd=b, rev=false;
+  if(a.seg>b.seg || (a.seg===b.seg && a.t>b.t)){ fwd=b; bwd=a; rev=true; }
+  const pts=[fwd.pt];
+  for(let i=fwd.seg+1;i<=bwd.seg;i++) pts.push(C[i]);
+  pts.push(bwd.pt);
+  if(rev) pts.reverse();
+  return pts;
+}
+
+/* ── 경로 그리기 ── */
+function drawRoute(){
+  if(!startId||!endId){ setStatus('현재 위치와 목적지를 모두 선택해 주세요.'); return; }
+  if(startId===endId){ setStatus('현재 위치와 목적지가 같습니다.'); return; }
+  const A=px(L[startId]), B=px(L[endId]);
+  const mid=corridorPathBetween(A,B);
+  const pts=[A,...mid,B].filter((p,i,arr)=> i===0 ||
+    Math.hypot(p.x-arr[i-1].x,p.y-arr[i-1].y)>2);
+  const d = pts.map((p,i)=>`${i?'L':'M'}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
+  $('routePath').setAttribute('d',d);  $('routeCasing').setAttribute('d',d);
+  $('routePath').classList.add('on');  $('routeCasing').classList.add('on');
+  placeMe(); placeDest();
+  setStatus(`<b>${L[startId].name}</b> → <b>${L[endId].name}</b> 경로 표시 중`
+    + ((!L[startId].set||!L[endId].set)?' <span style="color:#c47f00">(＊ 미보정 좌표 포함 — 보정 모드에서 위치를 확정하세요)</span>':''));
+}
+function clearRoute(){
+  $('routePath').classList.remove('on'); $('routeCasing').classList.remove('on');
+  $('destPin').style.display='none';
+}
+function placeMe(){
+  const p=px(L[startId]);
+  $('meDot').style.display='';
+  $('meDot').setAttribute('transform',`translate(${p.x},${p.y})`);
+}
+function placeDest(){
+  const p=px(L[endId]);
+  $('destPin').style.display='';
+  $('destPin').setAttribute('transform',`translate(${p.x},${p.y})`);
+}
+function setStatus(html){ $('status').innerHTML=html; }
+
+/* ── 렌더 전체 ── */
+function renderAll(){
+  if(startId) placeMe();
+  if(calMode) renderCal();
+}
+
+/* ── 일반 모드: 지도 클릭 → 가장 가까운 시설 선택 ── */
+overlay.addEventListener('click', e=>{
+  const p=evtToImg(e);
+  if(calMode){ calClick(p); return; }
+  let best=null;
+  for(const id of ids){
+    const q=px(L[id]);
+    const d=Math.hypot(p.x-q.x,p.y-q.y);
+    if(!best||d<best.d) best={id,d};
+  }
+  if(!best || best.d > Math.min(IW,IH)*0.08) return;   // 너무 먼 클릭 무시
+  if(!endIdPending()){
+    startId=best.id; $('startSel').value=best.id; endId=''; $('endSel').value='';
+    clearRoute(); placeMe();
+    setStatus(`현재 위치: <b>${L[best.id].name}</b> — 이제 목적지를 클릭하세요.`);
+  } else {
+    endId=best.id; $('endSel').value=best.id; drawRoute();
+  }
+});
+function endIdPending(){ return startId && !endId; }
+
+/* ── 이벤트 ── */
+$('findBtn').addEventListener('click', drawRoute);
+$('resetBtn').addEventListener('click', ()=>{
+  startId='gate1'; endId='';
+  $('startSel').value='gate1'; $('endSel').value='';
+  clearRoute(); placeMe();
+  setStatus('초기화되었습니다.');
+});
+$('startSel').addEventListener('change', e=>{
+  startId=e.target.value; endId=''; $('endSel').value='';
+  clearRoute(); if(startId) placeMe();
+});
+$('endSel').addEventListener('change', e=>{ endId=e.target.value; });
+
+/* ════════ 보정 모드 ════════ */
+$('calBtn').addEventListener('click', ()=>{
+  calMode=!calMode;
+  $('calBtn').classList.toggle('on',calMode);
+  $('calPanel').classList.toggle('on',calMode);
+  stage.classList.toggle('cal',calMode);
+  $('calPts').style.display = calMode?'':'none';
+  $('corLine').style.display = calMode?'':'none';
+  $('corPts').style.display = calMode?'':'none';
+  if(calMode){ renderCal(); dumpJson(); }
+});
+$('modeLoc').addEventListener('click', ()=>setSub('loc'));
+$('modeCor').addEventListener('click', ()=>setSub('cor'));
+function setSub(m){
+  calSubMode=m;
+  $('modeLoc').classList.toggle('on',m==='loc');
+  $('modeCor').classList.toggle('on',m==='cor');
+  $('calSel').style.display = m==='loc'?'':'none';
+  $('corUndo').style.display = m==='cor'?'':'none';
+  $('corClear').style.display = m==='cor'?'':'none';
+}
+function calClick(p){
+  if(calSubMode==='loc'){
+    const id=$('calSel').value;
+    if(!id){ alert('먼저 보정할 시설을 선택하세요.'); return; }
+    const c=toPct(p.x,p.y);
+    L[id].x=c.x; L[id].y=c.y; L[id].set=true;
+    refreshSelects(); renderCal(); dumpJson(); renderAll();
+  } else {
+    CAL.corridor.push(toPct(p.x,p.y));
+    renderCal(); dumpJson();
+  }
+}
+$('corUndo').addEventListener('click', ()=>{ CAL.corridor.pop(); renderCal(); dumpJson(); });
+$('corClear').addEventListener('click', ()=>{
+  if(confirm('복도 경로를 모두 지울까요?')){ CAL.corridor.length=0; renderCal(); dumpJson(); }
+});
+
+const NS='http://www.w3.org/2000/svg';
+function renderCal(){
+  // 위치 점
+  const g=$('calPts'); g.innerHTML='';
+  for(const id of ids){
+    const p=px(L[id]);
+    const c=document.createElementNS(NS,'circle');
+    c.setAttribute('class','cal-pt'+(L[id].set?'':' unset'));
+    c.setAttribute('cx',p.x); c.setAttribute('cy',p.y); c.setAttribute('r',7);
+    c.dataset.id=id;
+    enableDrag(c, (nx,ny)=>{
+      const pc=toPct(nx,ny); L[id].x=pc.x; L[id].y=pc.y; L[id].set=true;
+      refreshSelects(); dumpJson(); renderAll();
+    });
+    const t=document.createElementNS(NS,'text');
+    t.setAttribute('class','cal-label');
+    t.setAttribute('x',p.x+10); t.setAttribute('y',p.y-8);
+    t.textContent=L[id].name;
+    g.appendChild(c); g.appendChild(t);
+  }
+  // 복도
+  const C=CAL.corridor.map(px);
+  $('corLine').setAttribute('points', C.map(p=>`${p.x},${p.y}`).join(' '));
+  const cg=$('corPts'); cg.innerHTML='';
+  CAL.corridor.forEach((cp,i)=>{
+    const p=px(cp);
+    const c=document.createElementNS(NS,'circle');
+    c.setAttribute('class','cor-pt');
+    c.setAttribute('cx',p.x); c.setAttribute('cy',p.y); c.setAttribute('r',6);
+    enableDrag(c,(nx,ny)=>{
+      const pc=toPct(nx,ny); CAL.corridor[i]=pc;
+      $('corLine').setAttribute('points', CAL.corridor.map(q=>{const w=px(q);return `${w.x},${w.y}`}).join(' '));
+      dumpJson();
+    });
+    cg.appendChild(c);
+  });
+}
+function enableDrag(el,onMove){
+  let drag=false;
+  el.addEventListener('pointerdown',e=>{drag=true; el.setPointerCapture(e.pointerId); e.stopPropagation();});
+  el.addEventListener('pointermove',e=>{
+    if(!drag) return;
+    const p=evtToImg(e);
+    el.setAttribute('cx',p.x); el.setAttribute('cy',p.y);
+    onMove(p.x,p.y);
+  });
+  el.addEventListener('pointerup',e=>{drag=false; renderCal();});
+  el.addEventListener('click',e=>e.stopPropagation());
+}
+
+/* JSON 내보내기 / 적용 */
+function dumpJson(){
+  $('calJson').value = JSON.stringify({locations:L, corridor:CAL.corridor}, null, 1);
+}
+$('exportBtn').addEventListener('click', async ()=>{
+  dumpJson();
+  try{ await navigator.clipboard.writeText($('calJson').value);
+       setStatus('좌표 JSON이 클립보드에 복사되었습니다. HTML 파일의 CALIBRATION DATA 블록에 붙여넣으세요.'); }
+  catch{ $('calJson').select(); setStatus('아래 텍스트를 직접 복사해 주세요.'); }
+});
+$('importBtn').addEventListener('click', ()=>{
+  try{
+    const d=JSON.parse($('calJson').value);
+    if(d.locations) Object.assign(CAL.locations,d.locations);
+    if(Array.isArray(d.corridor)){ CAL.corridor.length=0; CAL.corridor.push(...d.corridor); }
+    refreshSelects(); renderCal(); renderAll();
+    setStatus('JSON이 적용되었습니다.');
+  }catch(err){ alert('JSON 파싱 오류: '+err.message); }
+});
+</script>
+</body>
+</html>
