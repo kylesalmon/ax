@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git ls-remote *)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git config *)",
+      "Bash(git branch *)",
+      "Bash(git push *)",
+      "Bash(curl -s -o map_hmain_01.png \"http://www.samsunghospital.com/_newhome/ui/home/static/img/info/guide/map/map_hmain_01.png?ver='21'\" -A \"Mozilla/5.0\")",
+      "Bash(python3 -c \"import PIL; print\\(PIL.__version__\\)\")",
+      "Bash(python -c \"import PIL; print\\(PIL.__version__\\)\")",
+      "Bash(python3)",
+      "Bash(python3 -c \"import playwright; print\\('ok'\\)\")",
+      "Bash(chromium-cli --help)",
+      "WebFetch(domain:www.samsunghospital.com)"
+    ]
+  }
+}
