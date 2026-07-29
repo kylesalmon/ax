@@ -75,6 +75,9 @@
   .pulse{fill:var(--me); opacity:.35; animation:pulse 1.6s ease-out infinite}
   @keyframes pulse{0%{r:10;opacity:.45} 70%{r:26;opacity:0} 100%{r:26;opacity:0}}
 
+  .loc-label{font-size:10.5px; font-weight:700; fill:var(--ink);
+             paint-order:stroke; stroke:#fff; stroke-width:3px; pointer-events:none;
+             text-anchor:middle}
   .cal-pt{fill:var(--cal); stroke:#fff; stroke-width:2; cursor:grab}
   .cal-pt.unset{fill:#b8c4cf}
   .cal-label{font-size:12px; font-weight:700; fill:var(--cal);
@@ -122,7 +125,7 @@
       <select id="startSel"></select>
     </div>
     <div class="field">
-      <label for="endSel"><span class="dot green"></span>목적지</label>
+      <label for="endSel"><span class="dot green"></span>목적지 (다른 층도 선택 가능)</label>
       <select id="endSel"></select>
     </div>
     <button id="findBtn">경로 표시</button>
@@ -151,6 +154,7 @@
         <g id="corPts" style="display:none"></g>
         <path id="routeCasing"/>
         <path id="routePath"/>
+        <g id="nameLabels"></g>
         <g id="calPts" style="display:none"></g>
         <g id="destPin" style="display:none">
           <path d="M0,-34 C-11,-34 -17,-25 -17,-17 C-17,-7 0,7 0,7 C0,7 17,-7 17,-17 C17,-25 11,-34 0,-34 Z"
@@ -249,36 +253,61 @@ let currentFloor = '1F';
 let CAL = FLOORS_DATA[currentFloor];
 let L = CAL.locations;
 let ids = Object.keys(L);
-let startId='', endId='';
+let startId='';
+let endFloor='', endId='';   // 목적지는 다른 층일 수 있음
 let calMode=false, calSubMode='loc';   // 'loc' | 'cor'
+let elevatorBusy=false;
 const $ = id=>document.getElementById(id);
+const ELEV_RE = /엘리베이터|승강기|E\/V/i;
 
 /* ── 셀렉트 ── */
 function fillSel(sel, ph, sortedIds){
   sel.innerHTML = `<option value="">${ph}</option>` +
     sortedIds.map(id=>`<option value="${id}">${L[id].name}${L[id].set?'':' *'}</option>`).join('');
 }
+function fillEndSelGlobal(){
+  const sel=$('endSel');
+  const cur = sel.value;
+  let html = `<option value="">목적지 선택</option>`;
+  for(const fk of FLOOR_ORDER){
+    const floorData = FLOORS_DATA[fk];
+    const fids = Object.keys(floorData.locations);
+    if(fids.length===0) continue;
+    const sorted = [...fids].sort((a,b)=>floorData.locations[a].name.localeCompare(floorData.locations[b].name,'ko'));
+    html += `<optgroup label="${floorData.label} (${fk})">` +
+      sorted.map(id=>{
+        const loc=floorData.locations[id];
+        return `<option value="${fk}|${id}">${loc.name}${loc.set?'':' *'}</option>`;
+      }).join('') + `</optgroup>`;
+  }
+  sel.innerHTML = html;
+  sel.value = cur && [...sel.options].some(o=>o.value===cur) ? cur : '';
+}
 function refreshSelects(){
   const sortedIds = [...ids].sort((a,b)=>L[a].name.localeCompare(L[b].name,'ko'));
-  const s=$('startSel').value, e=$('endSel').value, c=$('calSel').value;
+  const s=$('startSel').value, c=$('calSel').value;
   fillSel($('startSel'),'현재 위치 선택',sortedIds);
-  fillSel($('endSel'),'목적지 선택',sortedIds);
   fillSel($('calSel'),'보정할 시설 선택',sortedIds);
   $('startSel').value = ids.includes(s) ? s : (startId||'');
-  $('endSel').value = ids.includes(e) ? e : (endId||'');
   $('calSel').value = ids.includes(c) ? c : '';
+  fillEndSelGlobal();
 }
 function fillFloorSel(){
   const sel=$('floorSel');
   sel.innerHTML = FLOOR_ORDER.map(k=>`<option value="${k}">${FLOORS_DATA[k].label} (${k})</option>`).join('');
   sel.value = currentFloor;
 }
-function loadFloor(key){
+function loadFloor(key, opts){
+  opts = opts || {};
   currentFloor = key;
   CAL = FLOORS_DATA[key];
   L = CAL.locations;
   ids = Object.keys(L);
-  startId=''; endId='';
+  if(!opts.keepSelection){
+    startId='';
+    endFloor=''; endId='';
+    $('endSel').value='';
+  }
   clearRoute();
   $('meDot').style.display='none';
   $('floorBadge').textContent = key;
@@ -286,13 +315,72 @@ function loadFloor(key){
   img.alt = `본관 ${CAL.label} 원내지도`;
   document.getElementById('calFloorLabel').textContent = `— 현재 편집 중: ${CAL.label}(${key})`;
   refreshSelects();
-  if(ids.length===0){
-    setStatus(`이 층은 공식 페이지에 등록된 시설 목록이 없습니다. (지도만 표시)`);
-  } else {
-    setStatus('현재 위치와 목적지를 선택한 뒤 <b>경로 표시</b>를 누르세요. 지도의 위치를 직접 클릭해도 됩니다.');
+  if(!opts.keepSelection){
+    if(ids.length===0){
+      setStatus(`이 층은 공식 페이지에 등록된 시설 목록이 없습니다. (지도만 표시)`);
+    } else {
+      setStatus('현재 위치와 목적지를 선택한 뒤 <b>경로 표시</b>를 누르세요. 지도의 위치를 직접 클릭해도 됩니다. 목적지는 다른 층도 선택할 수 있어요.');
+    }
   }
   tryLoad([CAL.img, CAL.remote], 0);
   if(calMode){ renderCal(); dumpJson(); }
+}
+
+/* ── 다른 층 목적지: 엘리베이터 이동 연출 ── */
+function findElevatorId(){
+  return ids.find(id=>ELEV_RE.test(L[id].name));
+}
+function runElevatorTransition(destFloor, destId){
+  if(elevatorBusy) return;
+  elevatorBusy = true;
+  $('findBtn').disabled = true;
+  clearRoute();
+  $('meDot').style.display='none';
+  $('destPin').style.display='none';
+
+  const curIdx = FLOOR_ORDER.indexOf(currentFloor);
+  const dstIdx = FLOOR_ORDER.indexOf(destFloor);
+  const step = curIdx < dstIdx ? 1 : -1;
+  const seq = [];
+  for(let i=curIdx; i!==dstIdx; i+=step) seq.push(FLOOR_ORDER[i]);
+  seq.push(destFloor);
+
+  let i = 0;
+  setStatus(`🛗 엘리베이터 이용 중... <b>${FLOORS_DATA[seq[0]].label}</b>`);
+  const totalMs = 2000;
+  const stepMs = Math.max(280, totalMs/seq.length);
+  const timer = setInterval(()=>{
+    i++;
+    if(i >= seq.length){
+      clearInterval(timer);
+      loadFloor(destFloor, {keepSelection:true});
+      const elevId = findElevatorId();
+      endFloor = destFloor; endId = destId;
+      if(elevId){
+        startId = elevId;
+        $('startSel').value = elevId;
+        drawRoute();
+      } else {
+        startId='';
+        placeDest();
+        setStatus(`<b>${FLOORS_DATA[destFloor].label}</b> 도착. 목적지: <b>${L[destId].name}</b>`);
+      }
+      elevatorBusy = false;
+      $('findBtn').disabled = false;
+      return;
+    }
+    setStatus(`🛗 엘리베이터 이용 중... <b>${FLOORS_DATA[seq[i]].label}</b>`);
+  }, stepMs);
+}
+function handleFindClick(){
+  if(elevatorBusy) return;
+  if(!endFloor || !endId){ setStatus('목적지를 선택해 주세요.'); return; }
+  if(endFloor === currentFloor){
+    drawRoute();
+  } else {
+    if(!startId){ setStatus('현재 위치를 먼저 선택해 주세요.'); return; }
+    runElevatorTransition(endFloor, endId);
+  }
 }
 
 /* ── 복도 폴리라인 위 최단 경로 ── */
@@ -360,6 +448,24 @@ function setStatus(html){ $('status').innerHTML=html; }
 function renderAll(){
   if(startId) placeMe();
   if(calMode) renderCal();
+  renderNameLabels();
+}
+const NS='http://www.w3.org/2000/svg';
+function renderNameLabels(){
+  const g=$('nameLabels');
+  if(calMode){ g.style.display='none'; return; }
+  g.style.display='';
+  g.innerHTML='';
+  for(const id of ids){
+    const loc=L[id];
+    if(!loc.set) continue;
+    const p=px(loc);
+    const t=document.createElementNS(NS,'text');
+    t.setAttribute('class','loc-label');
+    t.setAttribute('x',p.x); t.setAttribute('y',p.y-11);
+    t.textContent=loc.name;
+    g.appendChild(t);
+  }
 }
 
 /* ── 일반 모드: 지도 클릭 → 가장 가까운 시설 선택 ── */
@@ -374,30 +480,38 @@ overlay.addEventListener('click', e=>{
   }
   if(!best || best.d > Math.min(IW,IH)*0.08) return;   // 너무 먼 클릭 무시
   if(!endIdPending()){
-    startId=best.id; $('startSel').value=best.id; endId=''; $('endSel').value='';
+    startId=best.id; $('startSel').value=best.id;
+    endFloor=''; endId=''; $('endSel').value='';
     clearRoute(); placeMe();
     setStatus(`현재 위치: <b>${L[best.id].name}</b> — 이제 목적지를 클릭하세요.`);
   } else {
-    endId=best.id; $('endSel').value=best.id; drawRoute();
+    endFloor=currentFloor; endId=best.id;
+    $('endSel').value = `${currentFloor}|${best.id}`;
+    handleFindClick();
   }
 });
-function endIdPending(){ return startId && !endId; }
+function endIdPending(){ return startId && !(endFloor && endId); }
 
 /* ── 이벤트 ── */
-$('findBtn').addEventListener('click', drawRoute);
+$('findBtn').addEventListener('click', handleFindClick);
 $('resetBtn').addEventListener('click', ()=>{
-  startId=''; endId='';
+  startId=''; endFloor=''; endId='';
   $('startSel').value=''; $('endSel').value='';
   clearRoute();
   $('meDot').style.display='none';
   setStatus('초기화되었습니다.');
 });
 $('startSel').addEventListener('change', e=>{
-  startId=e.target.value; endId=''; $('endSel').value='';
+  startId=e.target.value; endFloor=''; endId=''; $('endSel').value='';
   clearRoute();
   if(startId) placeMe(); else $('meDot').style.display='none';
 });
-$('endSel').addEventListener('change', e=>{ endId=e.target.value; });
+$('endSel').addEventListener('change', e=>{
+  const v=e.target.value;
+  if(!v){ endFloor=''; endId=''; return; }
+  const [f,id] = v.split('|');
+  endFloor=f; endId=id;
+});
 $('floorSel').addEventListener('change', e=> loadFloor(e.target.value));
 
 /* ════════ 보정 모드 ════════ */
@@ -409,6 +523,7 @@ $('calBtn').addEventListener('click', ()=>{
   $('calPts').style.display = calMode?'':'none';
   $('corLine').style.display = calMode?'':'none';
   $('corPts').style.display = calMode?'':'none';
+  $('nameLabels').style.display = calMode?'none':'';
   if(calMode){ renderCal(); dumpJson(); }
 });
 $('modeLoc').addEventListener('click', ()=>setSub('loc'));
@@ -438,7 +553,6 @@ $('corClear').addEventListener('click', ()=>{
   if(confirm('복도 경로를 모두 지울까요?')){ CAL.corridor.length=0; renderCal(); dumpJson(); }
 });
 
-const NS='http://www.w3.org/2000/svg';
 function renderCal(){
   // 위치 점
   const g=$('calPts'); g.innerHTML='';
