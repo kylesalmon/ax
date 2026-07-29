@@ -378,11 +378,18 @@ function runElevatorTransition(destFloor, destId){
 function handleFindClick(){
   if(elevatorBusy) return;
   if(!endFloor || !endId){ setStatus('목적지를 선택해 주세요.'); return; }
+  if(!startId){ setStatus('현재 위치를 먼저 선택해 주세요.'); return; }
   if(endFloor === currentFloor){
-    drawRoute();
+    drawRoute(endId);
   } else {
-    if(!startId){ setStatus('현재 위치를 먼저 선택해 주세요.'); return; }
-    runElevatorTransition(endFloor, endId);
+    const elevId = findElevatorId();
+    if(elevId){
+      // 이 층의 엘리베이터까지 우선 경로 표시 → "이송 시작"으로 실제 걸어가면
+      // 엘리베이터 근처에서 자동으로 층 전환 연출로 이어진다.
+      drawRoute(elevId, `<b>${L[startId].name}</b> → <b>${L[elevId].name}</b> (경유) → <b>${FLOORS_DATA[endFloor].label} ${L[endId] ? L[endId].name : ''}</b>`);
+    } else {
+      runElevatorTransition(endFloor, endId);  // 이 층엔 엘리베이터가 태그돼있지 않아 즉시 시뮬레이션으로 대체
+    }
   }
 }
 
@@ -418,19 +425,20 @@ function corridorPathBetween(pa,pb){
 
 /* ── 경로 그리기 ── */
 let lastRoutePts = null;
-function drawRoute(){
-  if(!startId||!endId){ setStatus('현재 위치와 목적지를 모두 선택해 주세요.'); return; }
-  if(startId===endId){ setStatus('현재 위치와 목적지가 같습니다.'); return; }
-  const A=px(L[startId]), B=px(L[endId]);
+function drawRoute(targetId, statusOverride){
+  targetId = targetId || endId;
+  if(!startId||!targetId){ setStatus('현재 위치와 목적지를 모두 선택해 주세요.'); return; }
+  if(startId===targetId){ setStatus('현재 위치와 목적지가 같습니다.'); return; }
+  const A=px(L[startId]), B=px(L[targetId]);
   const mid=corridorPathBetween(A,B);
   const pts=[A,...mid,B].filter((p,i,arr)=> i===0 ||
     Math.hypot(p.x-arr[i-1].x,p.y-arr[i-1].y)>2);
   const d = pts.map((p,i)=>`${i?'L':'M'}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
   $('routePath').setAttribute('d',d);  $('routeCasing').setAttribute('d',d);
   $('routePath').classList.add('on');  $('routeCasing').classList.add('on');
-  placeMe(); placeDest();
-  setStatus(`<b>${L[startId].name}</b> → <b>${L[endId].name}</b> 경로 표시 중`
-    + ((!L[startId].set||!L[endId].set)?' <span style="color:#c47f00">(＊ 미보정 좌표 포함 — 보정 모드에서 위치를 확정하세요)</span>':''));
+  placeMe(); placeDestAt(targetId);
+  setStatus(statusOverride || (`<b>${L[startId].name}</b> → <b>${L[targetId].name}</b> 경로 표시 중`
+    + ((!L[startId].set||!L[targetId].set)?' <span style="color:#c47f00">(＊ 미보정 좌표 포함 — 보정 모드에서 위치를 확정하세요)</span>':'')));
   lastRoutePts = pts;
   $('transportBar').style.display = pts.length>1 ? '' : 'none';
   stopTransport();
@@ -447,11 +455,12 @@ function placeMe(){
   $('meDot').style.display='';
   $('meDot').setAttribute('transform',`translate(${p.x},${p.y})`);
 }
-function placeDest(){
-  const p=px(L[endId]);
+function placeDestAt(id){
+  const p=px(L[id]);
   $('destPin').style.display='';
   $('destPin').setAttribute('transform',`translate(${p.x},${p.y})`);
 }
+function placeDest(){ placeDestAt(endId); }
 function setStatus(html){ $('status').innerHTML=html; }
 
 /* ════════ 이송 시뮬레이션 (자유 추측항법 + 실시간 재탐색) ════════
@@ -465,10 +474,12 @@ function setStatus(html){ $('status').innerHTML=html; }
    오차 누적을 줄인다(복도가 대체로 직각인 점을 이용). ════════ */
 const TRANSPORT_SPEED_PXPS = 40;     // 움직이는 동안의 가정 속도 (px/sec, 지도 스케일 기준 튜닝값)
 const TURN_ANGLE_THRESHOLD = 28;     // 이 각도(도) 이상 방향이 바뀌면 "회전"으로 판정(90도 스냅 트리거)
-const TURN_MIN_INTERVAL_MS = 1200;   // 연속 오검출 방지용 최소 간격
+const TURN_MIN_INTERVAL_MS = 900;    // 연속 오검출 방지용 최소 간격
 const MOTION_THRESHOLD = 1.0;        // 이 값 이상의 흔들림 에너지(m/s^2)면 "움직이는 중"
-const MOTION_STOP_DELAY_MS = 600;    // 흔들림이 멈춘 뒤 이 시간 지나야 "정지"로 판정 (순간 끊김 방지)
+const MOTION_STOP_DELAY_MS = 350;    // 흔들림이 멈춘 뒤 이 시간 지나야 "정지"로 판정 (너무 짧으면 순간끊김, 너무 길면 굼뜸)
+const ROTATION_SUPPRESS_DEGPS = 70;  // 이 각속도(도/초) 이상으로 "회전 중"이면 그 순간의 가속도는 이동판정에 반영 안 함
 const ARRIVE_DIST_PX = 16;           // 목적지와 이 거리(px) 이내면 도착 처리
+const ELEV_ARRIVE_DIST_PX = 22;      // 엘리베이터 위치와 이 거리 이내면 "탑승"으로 판정
 
 let transportActive=false, transportRAF=null, lastFrameTime=null;
 let freeX=0, freeY=0, estHeadingRad=0;
@@ -476,10 +487,9 @@ let lastHeading=null, lastTurnTime=0;
 let gyroHandler=null, motionHandler=null;
 let isMoving=false, lastMotionTime=0, motionEnergy=0;
 let gravityEst=null;
+let transportTargetId=null, transportNeedsElevator=false, transportInElevator=false;
 
-function transportPointAt(){ return {x:freeX, y:freeY}; }
-function updateRouteLineFrom(pointA){
-  const destP = px(L[endId]);
+function updateRouteLineFrom(pointA, destP){
   const mid = corridorPathBetween(pointA, destP);
   const pts=[pointA, ...mid, destP].filter((p,i,arr)=> i===0 ||
     Math.hypot(p.x-arr[i-1].x, p.y-arr[i-1].y) > 2);
@@ -489,6 +499,7 @@ function updateRouteLineFrom(pointA){
 }
 function transportTick(now){
   if(!transportActive) return;
+  if(transportInElevator){ transportRAF=requestAnimationFrame(transportTick); return; }
   if(lastFrameTime==null) lastFrameTime=now;
   const dt=(now-lastFrameTime)/1000;
   lastFrameTime=now;
@@ -497,22 +508,65 @@ function transportTick(now){
     freeX += Math.cos(estHeadingRad)*TRANSPORT_SPEED_PXPS*dt;
     freeY += Math.sin(estHeadingRad)*TRANSPORT_SPEED_PXPS*dt;
   }
-  const p=transportPointAt();
+  const p={x:freeX, y:freeY};
   $('meDot').style.display='';
   $('meDot').setAttribute('transform',`translate(${p.x},${p.y})`);
-  updateRouteLineFrom(p);
-  const destP=px(L[endId]);
-  const distLeft=Math.hypot(destP.x-p.x, destP.y-p.y);
+  const targetP = px(L[transportTargetId]);
+  updateRouteLineFrom(p, targetP);
+  const distLeft=Math.hypot(targetP.x-p.x, targetP.y-p.y);
   const moveNote = !motionHandler ? ' (센서 없이 속도 추정만)' : (isMoving ? '' : ' — 정지 중');
-  $('transportStatus').textContent = `🚶 이동 중...${moveNote}`;
-  if(distLeft <= ARRIVE_DIST_PX){ finishTransport(); return; }
+  const legNote = transportNeedsElevator ? ' (엘리베이터로 이동 중)' : '';
+  $('transportStatus').textContent = `🚶 이동 중...${moveNote}${legNote}`;
+  const arriveThresh = transportNeedsElevator ? ELEV_ARRIVE_DIST_PX : ARRIVE_DIST_PX;
+  if(distLeft <= arriveThresh){
+    if(transportNeedsElevator){ beginElevatorLeg(); return; }
+    finishTransport();
+    return;
+  }
   transportRAF=requestAnimationFrame(transportTick);
+}
+function beginElevatorLeg(){
+  transportInElevator=true;
+  $('destPin').style.display='none';
+  const destFloor=endFloor;
+  const curIdx=FLOOR_ORDER.indexOf(currentFloor);
+  const dstIdx=FLOOR_ORDER.indexOf(destFloor);
+  const step=curIdx<dstIdx?1:-1;
+  const seq=[];
+  for(let i=curIdx;i!==dstIdx;i+=step) seq.push(FLOOR_ORDER[i]);
+  seq.push(destFloor);
+  let i=0;
+  $('transportStatus').textContent = `🛗 ${FLOORS_DATA[seq[0]].label}에서 이동 중...`;
+  const stepMs = Math.max(280, 2000/seq.length);
+  const timer=setInterval(()=>{
+    i++;
+    if(i>=seq.length){
+      clearInterval(timer);
+      loadFloor(destFloor, {keepSelection:true});
+      transportNeedsElevator=false;
+      transportTargetId=endId;
+      const elevId=findElevatorId();
+      const startP = elevId ? px(L[elevId]) : {x:IW/2, y:IH/2};
+      freeX=startP.x; freeY=startP.y;
+      const destP=px(L[endId]);
+      estHeadingRad=Math.atan2(destP.y-freeY, destP.x-freeX);
+      lastFrameTime=null;
+      isMoving=false; lastMotionTime=0; motionEnergy=0;
+      $('meDot').style.display='';
+      $('meDot').setAttribute('transform',`translate(${freeX},${freeY})`);
+      updateRouteLineFrom({x:freeX,y:freeY}, destP);
+      placeDest();
+      transportInElevator=false;
+      transportRAF=requestAnimationFrame(transportTick);
+      return;
+    }
+    $('transportStatus').textContent = `🛗 ${FLOORS_DATA[seq[i]].label}로 이동 중...`;
+  }, stepMs);
 }
 function snapHeadingTo90(){
   const deg=estHeadingRad*180/Math.PI;
   const snapped=Math.round(deg/90)*90;
   estHeadingRad=snapped*Math.PI/180;
-  $('transportStatus').textContent = '↪ 회전 감지 — 방향 보정됨';
 }
 function onDeviceOrientation(e){
   const heading = (e.webkitCompassHeading!=null) ? e.webkitCompassHeading : e.alpha;
@@ -530,16 +584,29 @@ function onDeviceOrientation(e){
   lastHeading=heading;
 }
 function onDeviceMotion(e){
-  const a=e.accelerationIncludingGravity;
-  if(!a || a.x==null) return;
-  if(!gravityEst) gravityEst={x:a.x,y:a.y,z:a.z};
-  const ALPHA=0.9;
-  gravityEst.x=ALPHA*gravityEst.x+(1-ALPHA)*a.x;
-  gravityEst.y=ALPHA*gravityEst.y+(1-ALPHA)*a.y;
-  gravityEst.z=ALPHA*gravityEst.z+(1-ALPHA)*a.z;
-  const dx=a.x-gravityEst.x, dy=a.y-gravityEst.y, dz=a.z-gravityEst.z;
+  // 회전 중(제자리에서 몸을 돌리는 중)에는 그 순간의 가속도 튐을 "이동"으로 오인하지 않게 억제.
+  // 자이로(rotationRate)는 devicemotion 이벤트에 같이 실려온다.
+  if(e.rotationRate){
+    const r=e.rotationRate;
+    const rotMag=Math.sqrt((r.alpha||0)**2+(r.beta||0)**2+(r.gamma||0)**2);
+    if(rotMag > ROTATION_SUPPRESS_DEGPS) return;
+  }
+  let dx,dy,dz;
+  if(e.acceleration && e.acceleration.x!=null){
+    // OS가 이미 중력을 제거해 준 선형가속도 (있으면 이쪽이 더 정확)
+    dx=e.acceleration.x; dy=e.acceleration.y; dz=e.acceleration.z;
+  } else {
+    const a=e.accelerationIncludingGravity;
+    if(!a || a.x==null) return;
+    if(!gravityEst) gravityEst={x:a.x,y:a.y,z:a.z};
+    const ALPHA=0.9;
+    gravityEst.x=ALPHA*gravityEst.x+(1-ALPHA)*a.x;
+    gravityEst.y=ALPHA*gravityEst.y+(1-ALPHA)*a.y;
+    gravityEst.z=ALPHA*gravityEst.z+(1-ALPHA)*a.z;
+    dx=a.x-gravityEst.x; dy=a.y-gravityEst.y; dz=a.z-gravityEst.z;
+  }
   const mag=Math.sqrt(dx*dx+dy*dy+dz*dz);
-  motionEnergy = motionEnergy*0.85 + mag*0.15;
+  motionEnergy = motionEnergy*0.7 + mag*0.3;   // 더 빠르게 반응하도록 스무딩 비중 조정
   if(motionEnergy > MOTION_THRESHOLD){
     isMoving=true;
     lastMotionTime=performance.now();
@@ -548,11 +615,20 @@ function onDeviceMotion(e){
 async function startTransport(){
   if(!lastRoutePts || lastRoutePts.length<2) return;
   transportActive=true;
+  transportInElevator=false;
   lastFrameTime=null;
   freeX=lastRoutePts[0].x; freeY=lastRoutePts[0].y;
   estHeadingRad=Math.atan2(lastRoutePts[1].y-lastRoutePts[0].y, lastRoutePts[1].x-lastRoutePts[0].x);
   lastHeading=null; lastTurnTime=0;
   isMoving=false; lastMotionTime=0; motionEnergy=0; gravityEst=null;
+  if(endFloor && endFloor!==currentFloor){
+    const elevId=findElevatorId();
+    transportTargetId = elevId || endId;
+    transportNeedsElevator = !!elevId;
+  } else {
+    transportTargetId = endId;
+    transportNeedsElevator = false;
+  }
   $('startTransportBtn').style.display='none';
   $('stopTransportBtn').style.display='';
   $('transportStatus').textContent='🚶 대기 중... (움직이면 시작됩니다)';
@@ -577,6 +653,7 @@ async function startTransport(){
 }
 function stopTransport(){
   transportActive=false;
+  transportInElevator=false;
   if(transportRAF) cancelAnimationFrame(transportRAF);
   transportRAF=null;
   if(gyroHandler){ window.removeEventListener('deviceorientation', gyroHandler, true); gyroHandler=null; }
