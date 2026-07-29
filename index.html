@@ -42,6 +42,8 @@
   #resetBtn{background:#fff; color:var(--ink-soft); border-color:var(--line)}
   #calBtn{background:#fff; color:var(--cal); border-color:var(--cal)}
   #calBtn.on{background:var(--cal); color:#fff}
+  #startTransportBtn{background:#7c3aed; color:#fff}
+  #stopTransportBtn{background:#fff; color:#c0392b; border-color:#c0392b}
   .statusbar{margin-top:10px; font-size:13.5px; color:var(--ink-soft); min-height:20px}
   .statusbar b{color:var(--ink)}
 
@@ -128,6 +130,11 @@
     <button id="findBtn">경로 표시</button>
     <button id="resetBtn">초기화</button>
     <button id="calBtn">⚙ 보정 모드</button>
+  </div>
+  <div class="controls" id="transportBar" style="display:none; margin-top:10px">
+    <button id="startTransportBtn">🛏 이송 시작 (실시간 추적)</button>
+    <button id="stopTransportBtn" style="display:none">■ 이송 중지</button>
+    <span id="transportStatus" style="font-size:13px; color:var(--ink-soft)"></span>
   </div>
   <div class="statusbar" id="status">현재 위치와 목적지를 선택한 뒤 <b>경로 표시</b>를 누르세요. 지도의 위치를 직접 클릭해도 됩니다.</div>
 
@@ -410,6 +417,7 @@ function corridorPathBetween(pa,pb){
 }
 
 /* ── 경로 그리기 ── */
+let lastRoutePts = null;
 function drawRoute(){
   if(!startId||!endId){ setStatus('현재 위치와 목적지를 모두 선택해 주세요.'); return; }
   if(startId===endId){ setStatus('현재 위치와 목적지가 같습니다.'); return; }
@@ -423,10 +431,16 @@ function drawRoute(){
   placeMe(); placeDest();
   setStatus(`<b>${L[startId].name}</b> → <b>${L[endId].name}</b> 경로 표시 중`
     + ((!L[startId].set||!L[endId].set)?' <span style="color:#c47f00">(＊ 미보정 좌표 포함 — 보정 모드에서 위치를 확정하세요)</span>':''));
+  lastRoutePts = pts;
+  $('transportBar').style.display = pts.length>1 ? '' : 'none';
+  stopTransport();
 }
 function clearRoute(){
   $('routePath').classList.remove('on'); $('routeCasing').classList.remove('on');
   $('destPin').style.display='none';
+  lastRoutePts = null;
+  $('transportBar').style.display='none';
+  stopTransport();
 }
 function placeMe(){
   const p=px(L[startId]);
@@ -439,6 +453,137 @@ function placeDest(){
   $('destPin').setAttribute('transform',`translate(${p.x},${p.y})`);
 }
 function setStatus(html){ $('status').innerHTML=html; }
+
+/* ════════ 이송 시뮬레이션 (평균속도 애니메이션 + 자이로 회전보정) ════════
+   실제 GPS/비콘 없이도 데모 가능하게: 정해진 경로를 가정 속도로 따라가며
+   애니메이션하고, 폰의 방향센서(자이로)로 "실제로 꺾었다"를 감지하면
+   경로상 다음 회전 지점으로 위치를 스냅해 보정한다. ════════ */
+const TRANSPORT_SPEED_PXPS = 40;     // 가정 이동 속도 (px/sec, 지도 스케일 기준 튜닝값)
+const TURN_ANGLE_THRESHOLD = 28;     // 이 각도(도) 이상 방향이 바뀌면 "회전"으로 판정
+const TURN_MIN_INTERVAL_MS = 1200;   // 연속 오검출 방지용 최소 간격
+
+let transportActive=false, transportRAF=null;
+let transportSegLens=[], transportCum=[0], transportTotal=0, transportTurns=[];
+let transportSnapDist=0, transportSnapTime=0;
+let lastHeading=null, lastTurnTime=0;
+let gyroHandler=null;
+
+function buildTransportModel(pts){
+  transportSegLens=[]; transportCum=[0]; transportTurns=[];
+  let cum=0;
+  for(let i=0;i<pts.length-1;i++){
+    const len=Math.hypot(pts[i+1].x-pts[i].x, pts[i+1].y-pts[i].y);
+    transportSegLens.push(len);
+    cum+=len;
+    transportCum.push(cum);
+  }
+  transportTotal=cum;
+  for(let i=1;i<pts.length-1;i++){
+    const a1=Math.atan2(pts[i].y-pts[i-1].y, pts[i].x-pts[i-1].x);
+    const a2=Math.atan2(pts[i+1].y-pts[i].y, pts[i+1].x-pts[i].x);
+    let diff=(a2-a1)*180/Math.PI;
+    diff=((diff+540)%360)-180;
+    if(Math.abs(diff) > 20) transportTurns.push({cumDist: transportCum[i]});
+  }
+}
+function transportPointAt(dist){
+  const pts=lastRoutePts;
+  if(dist<=0) return pts[0];
+  if(dist>=transportTotal) return pts[pts.length-1];
+  for(let i=0;i<transportSegLens.length;i++){
+    if(dist <= transportCum[i+1]){
+      const segLen=transportSegLens[i]||1;
+      const t=(dist-transportCum[i])/segLen;
+      const a=pts[i], b=pts[i+1];
+      return {x:a.x+(b.x-a.x)*t, y:a.y+(b.y-a.y)*t};
+    }
+  }
+  return pts[pts.length-1];
+}
+function transportTick(){
+  if(!transportActive) return;
+  const now=performance.now();
+  const dist=Math.min(transportTotal, transportSnapDist+(now-transportSnapTime)/1000*TRANSPORT_SPEED_PXPS);
+  const p=transportPointAt(dist);
+  $('meDot').style.display='';
+  $('meDot').setAttribute('transform',`translate(${p.x},${p.y})`);
+  const pct = transportTotal>0 ? Math.round(dist/transportTotal*100) : 100;
+  const gyroNote = gyroHandler ? '' : ' (센서 없이 속도 추정만)';
+  $('transportStatus').textContent = `🚶 이동 중... ${pct}%${gyroNote}`;
+  if(dist>=transportTotal){ finishTransport(); return; }
+  transportRAF=requestAnimationFrame(transportTick);
+}
+function handleTurnDetected(){
+  if(!transportActive) return;
+  const now=performance.now();
+  const curDist=transportSnapDist+(now-transportSnapTime)/1000*TRANSPORT_SPEED_PXPS;
+  let target=null;
+  for(const t of transportTurns){ if(t.cumDist > curDist-15){ target=t; break; } }
+  if(target){
+    transportSnapDist=target.cumDist;
+    transportSnapTime=now;
+    $('transportStatus').textContent = `↪ 회전 감지 — 위치 보정됨 (${Math.round(target.cumDist/transportTotal*100)}%)`;
+  }
+}
+function onDeviceOrientation(e){
+  const heading = (e.webkitCompassHeading!=null) ? e.webkitCompassHeading : e.alpha;
+  if(heading==null) return;
+  if(lastHeading!=null){
+    let diff=heading-lastHeading;
+    diff=((diff+540)%360)-180;
+    const now=performance.now();
+    if(Math.abs(diff)>TURN_ANGLE_THRESHOLD && (now-lastTurnTime)>TURN_MIN_INTERVAL_MS){
+      lastTurnTime=now;
+      handleTurnDetected();
+    }
+  }
+  lastHeading=heading;
+}
+async function startTransport(){
+  if(!lastRoutePts || lastRoutePts.length<2) return;
+  buildTransportModel(lastRoutePts);
+  transportActive=true;
+  transportSnapDist=0; transportSnapTime=performance.now();
+  lastHeading=null; lastTurnTime=0;
+  $('startTransportBtn').style.display='none';
+  $('stopTransportBtn').style.display='';
+  $('transportStatus').textContent='🚶 이동 중... 0%';
+  try{
+    if(typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function'){
+      const res = await DeviceOrientationEvent.requestPermission();
+      if(res==='granted'){
+        gyroHandler=onDeviceOrientation;
+        window.addEventListener('deviceorientation', gyroHandler, true);
+      } else {
+        $('transportStatus').textContent += ' (센서 권한 거부됨)';
+      }
+    } else if(window.DeviceOrientationEvent){
+      gyroHandler=onDeviceOrientation;
+      window.addEventListener('deviceorientation', gyroHandler, true);
+    } else {
+      $('transportStatus').textContent += ' (이 브라우저는 방향센서 미지원)';
+    }
+  }catch(err){
+    $('transportStatus').textContent += ' (센서 사용 불가)';
+  }
+  transportRAF=requestAnimationFrame(transportTick);
+}
+function stopTransport(){
+  transportActive=false;
+  if(transportRAF) cancelAnimationFrame(transportRAF);
+  transportRAF=null;
+  if(gyroHandler){ window.removeEventListener('deviceorientation', gyroHandler, true); gyroHandler=null; }
+  $('startTransportBtn').style.display = lastRoutePts ? '' : 'none';
+  $('stopTransportBtn').style.display='none';
+  $('transportStatus').textContent='';
+}
+function finishTransport(){
+  const destName = (endId && L[endId]) ? L[endId].name : '목적지';
+  stopTransport();
+  setStatus(`<b>${destName}</b> 도착했습니다. 🎉`);
+}
+$('startTransportBtn').addEventListener('click', startTransport);
+$('stopTransportBtn').addEventListener('click', ()=>{ stopTransport(); placeMe(); });
 
 /* ── 렌더 전체 ── */
 function renderAll(){
