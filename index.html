@@ -605,8 +605,14 @@ const MOTION_THRESHOLD = 0.85;       // 이 값 이상의 흔들림 에너지(m/
                                      // (침대 난간에 폰을 올려두고 부드럽게 밀면 흔들림이 작아
                                      //  1.35에서는 걷는 중에도 자꾸 임계값 아래로 떨어졌다)
 const MOTION_START_DELAY_MS = 250;   // 흔들림이 이 시간 이상 지속돼야 이동 시작으로 인정
-const MOTION_STOP_DELAY_MS = 1100;   // 흔들림이 멈춘 뒤 이 시간 지나야 "정지"로 판정
-                                     // (보행은 연속 동작이므로 한두 걸음 사이의 공백으로 끊기지 않게 넉넉히)
+/* 시작/정지를 같은 임계값 하나로 판정하면, 걸음 사이 공백에 끊기지 않으려고 지연을
+   길게 잡는 순간 "멈춰도 늦게 멈추는" 문제가 같이 생긴다. 그래서 임계값을 두 개로
+   나눈다(히스테리시스): 시작은 높은 값을 넘어야, 정지는 낮은 값 아래로 떨어져야 한다.
+   걸음 사이 공백에서는 에너지가 낮은 값까지는 잘 내려가지 않으므로, 정지 지연을
+   짧게 잡아도 보행이 끊기지 않는다. */
+const MOTION_STOP_THRESHOLD = 0.40;  // 이 값 아래로 떨어지면 "정지" 후보 (시작 임계값보다 낮게)
+const MOTION_STOP_DELAY_MS = 320;    // 정지 후보가 이 시간 지속되면 정지로 확정
+const SENSOR_GAP_MS = 800;           // 센서 샘플이 이 시간 이상 아예 끊기면 안전하게 정지 처리
 const ROTATION_SUPPRESS_DEGPS = 70;  // 이 각속도 이상으로 회전 중이면 그 순간 가속도는 이동판정에서 제외
 const HEADING_FREEZE_DEGPS = 110;    // 이 속도 이상으로 방향이 바뀌는 중이면 전진 정지
                                      // (실내 자기장 교란으로 나침반이 순간 튀면 35에서는 수시로
@@ -649,7 +655,7 @@ let headingFastSince=0;               // 각속도가 임계값을 넘기 시작
 let smoothedHeading=null;             // 저역통과 필터를 거친 나침반 값 (도)
 let turnPendingHeading=null, turnPendingSince=0;   // 90도 스냅 지속시간 판정용
 let gyroHandler=null, motionHandler=null;
-let isMoving=false, lastMotionTime=0, motionEnergy=0, motionAboveSince=0;
+let isMoving=false, lastSampleTime=0, motionEnergy=0, motionAboveSince=0, motionBelowSince=0;
 let gravityEst=null;
 let transportTargetId=null, transportNeedsElevator=false, transportInElevator=false;
 let transportBoardedElevName=null;    // 실제로 탑승한 엘리베이터의 이름 — 도착 층에서 같은 이름을 찾아 시작점으로 쓴다
@@ -824,7 +830,9 @@ function transportTick(now){
   if(lastFrameTime==null) lastFrameTime=now;
   const dt=Math.min(0.1,(now-lastFrameTime)/1000);
   lastFrameTime=now;
-  if(motionHandler && now-lastMotionTime>MOTION_STOP_DELAY_MS) isMoving=false;
+  // 정지 판정은 onDeviceMotion에서 에너지 기준으로 즉시 처리한다.
+  // 여기서는 센서가 아예 샘플을 보내지 않는 비정상 상황만 막는다.
+  if(motionHandler && lastSampleTime && now-lastSampleTime>SENSOR_GAP_MS) isMoving=false;
   headingRateDegPerSec *= 0.75;
   // 순간적인 나침반 튐 한 번으로 전진이 멈추지 않도록, 높은 각속도가 일정 시간
   // 지속될 때만 "회전 중"으로 본다.
@@ -964,7 +972,7 @@ function completeElevatorArrival(){
   lastFrameTime=null;
   traveledDist=0;
   legStartTime=performance.now(); dwellCandidateId=null; dwellStartTime=0;
-  isMoving=false; lastMotionTime=0; motionEnergy=0; motionAboveSince=0;
+  isMoving=false; lastSampleTime=0; motionEnergy=0; motionAboveSince=0; motionBelowSince=0;
   $('meDot').style.display='';
   $('meDot').setAttribute('transform',`translate(${p.x},${p.y})`);
   updateRouteLineFrom(p, destP);
@@ -1023,19 +1031,17 @@ function onDeviceMotion(e){
   // 엘리베이터 구간에서는 회전 억제를 걸지 않는다. 내려서 걸어나갈 땐 대개 몸을 돌리는데,
   // 그 순간의 샘플을 통째로 버리면 하차 감지가 되지 않기 때문이다.
   // [수정] 예전에는 회전이 빠르면 이 샘플을 통째로 버렸다(return). 그런데 팔을 흔들거나
-  // 코너를 돌 때는 거의 매 샘플이 버려져서, MOTION_STOP_DELAY_MS 동안 아무 샘플도 도착하지
+  // 코너를 돌 때는 거의 매 샘플이 버려져서, 정지 판정 시간 동안 아무 샘플도 도착하지
   // 않아 "정지"로 오판하고 점이 멈춰버렸다. 이제 회전 중에는 "새로 이동을 시작"하는 것만
   // 막고, 이미 이동 중이면 타임아웃이 걸리지 않게 시간만 갱신한다.
-  let rotSuppressed=false;
+  lastSampleTime=performance.now();   // 샘플이 도착했다는 사실은 무조건 먼저 기록
   if(!transportInElevator && e.rotationRate){
     const r=e.rotationRate;
     const rotMag=Math.sqrt((r.alpha||0)**2+(r.beta||0)**2+(r.gamma||0)**2);
-    if(rotMag > ROTATION_SUPPRESS_DEGPS){
-      if(isMoving){ lastMotionTime=performance.now(); return; }
-      rotSuppressed=true;
-    }
+    // 회전 중 샘플은 이동/정지 판정에서 제외한다(팔 흔들림·코너 회전으로 오판 방지).
+    // 단 위에서 lastSampleTime을 이미 갱신했으므로 "센서 끊김"으로 오인되지 않는다.
+    if(rotMag > ROTATION_SUPPRESS_DEGPS) return;
   }
-  if(rotSuppressed) return;
   let dx,dy,dz;
   if(e.acceleration && e.acceleration.x!=null){
     dx=e.acceleration.x; dy=e.acceleration.y; dz=e.acceleration.z;
@@ -1055,12 +1061,18 @@ function onDeviceMotion(e){
   motionEnergy = motionEnergy*sm + mag*(1-sm);
   const nowMs=performance.now();
   if(motionEnergy > MOTION_THRESHOLD){
-    lastMotionTime=nowMs;
+    motionBelowSince=0;
     if(!isMoving){
       if(motionAboveSince===0) motionAboveSince=nowMs;
       if(nowMs-motionAboveSince >= MOTION_START_DELAY_MS) isMoving=true;
     }
-  } else motionAboveSince=0;
+  } else if(motionEnergy < MOTION_STOP_THRESHOLD){
+    motionAboveSince=0;
+    if(motionBelowSince===0) motionBelowSince=nowMs;
+    if(isMoving && nowMs-motionBelowSince >= MOTION_STOP_DELAY_MS) isMoving=false;
+  }
+  // 두 임계값 사이(히스테리시스 구간)에서는 직전 상태를 그대로 유지한다 —
+  // 걸음과 걸음 사이의 짧은 공백이 여기에 해당한다.
 }
 
 /* 지도 기준 방향 → 화면 각도(라디안). 화면 y축이 아래로 증가하므로 북(위)이 -90도. */
@@ -1103,7 +1115,7 @@ async function beginTransport(dirKey){
   updateHeadingArrow();
   lastHeading=null; lastTurnTime=0; lastOrientTime=0; headingRateDegPerSec=0;
   smoothedHeading=null; turnPendingHeading=null; turnPendingSince=0; headingFastSince=0;
-  isMoving=false; lastMotionTime=0; motionEnergy=0; motionAboveSince=0; gravityEst=null;
+  isMoving=false; lastSampleTime=0; motionEnergy=0; motionAboveSince=0; motionBelowSince=0; gravityEst=null;
   if(endFloor && endFloor!==currentFloor){
     const elevId=findElevatorId();
     transportTargetId = elevId || endId;
