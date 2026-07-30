@@ -661,29 +661,119 @@ function chooseNextEdge(G, nodeIdx, fromEdge){
   return best;
 }
 /* 복도를 따라 dist(px)만큼 전진. 실제로 이동한 거리를 반환. */
-function advanceAlongCorridor(dist){
-  const G=getNavGraph();
-  if(curEdge<0) return 0;
-  let moved=0, guard=0;
-  while(dist>0.01 && guard++<40){
-    const g=edgeGeom(G,curEdge);
-    if(g.len<0.01) break;
-    const sign=chooseDirOnEdge(g);
-    lastDirSign=sign;
-    const remain = sign>0 ? (1-curT)*g.len : curT*g.len;
-    if(dist < remain){
-      curT += sign*dist/g.len;
-      moved+=dist; dist=0;
-    } else {
-      curT = sign>0 ? 1 : 0;
-      moved+=remain; dist-=remain;
-      const nodeIdx = sign>0 ? g.b : g.a;
-      const next=chooseNextEdge(G, nodeIdx, curEdge);
-      if(!next) break;              // 복도 끝(막다른 길) — 여기서 멈춤
-      curEdge=next.ei; curT=next.startT;
+// Global/State 변수 (상단에 위치)
+let offPathStartTime = null;
+const OFF_PATH_THRESHOLD_MS = 2000; // 2초
+
+/**
+ * 기존 advanceAlongCorridor 대체 함수
+ * @param {number} dist - 걸음 이동 거리 (m)
+ * @return {number} 실제로 이동한 거리
+ */
+function advanceAlongCorridor(dist) {
+  const G = getNavGraph();
+  if (!G || G.edges.length === 0) return 0;
+
+  // 1. 현재 헤딩(estHeadingRad)과 가장 잘 맞는 주변 Edge 탐색 (교차로 스위칭 핵심)
+  const SWITCH_ANGLE_THRESHOLD = Math.PI / 4; // 45도 이내면 갈아탐
+  let bestEdgeIdx = -1;
+  let bestStartT = 0;
+  let minAngleDiff = Infinity;
+
+  // 현재 연결된 노드 주변 edge 및 전체 edge 중 가장 적합한 edge 탐색
+  G.edges.forEach((edge, ei) => {
+    const g = edgeGeom(G, ei);
+    if (g.len < 0.01) return;
+
+    // 헤딩과 edge 방향 간의 차이 계산
+    const d1 = Math.abs(angDiff(estHeadingRad, g.ang));
+    const d2 = Math.abs(angDiff(estHeadingRad, g.ang + Math.PI));
+    const minDiff = Math.min(d1, d2);
+
+    // 현재 위치 근처에 있고 방향이 가장 일치하는 Edge 선택
+    if (minDiff < minAngleDiff) {
+      minAngleDiff = minDiff;
+      bestEdgeIdx = ei;
     }
+  });
+
+  // 2. 90도 직각 전환 등 사용자가 바라보는 방향에 적절한 길(Edge)이 있는 경우
+  if (bestEdgeIdx !== -1 && minAngleDiff < SWITCH_ANGLE_THRESHOLD) {
+    // ✅ 정상 진행: 적절한 길로 노선 스위칭
+    if (curEdge !== bestEdgeIdx) {
+      curEdge = bestEdgeIdx;
+      // 노선 변경 시 현재 T값 재계산 또는 초기화
+    }
+
+    // 길 이탈 타이머 및 경고 UI 리셋
+    offPathStartTime = null;
+    hideMapWarningMessage();
+
+    // 3. 기존의 Edge 상 전진 로직 수행
+    let moved = 0, guard = 0;
+    while (dist > 0.01 && guard++ < 40) {
+      const g = edgeGeom(G, curEdge);
+      if (g.len < 0.01) break;
+
+      const sign = chooseDirOnEdge(g);
+      lastDirSign = sign;
+      const remain = sign > 0 ? (1 - curT) * g.len : curT * g.len;
+
+      if (dist < remain) {
+        curT += (sign * dist) / g.len;
+        moved += dist;
+        dist = 0;
+      } else {
+        curT = sign > 0 ? 1 : 0;
+        moved += remain;
+        dist -= remain;
+
+        const nodeIdx = sign > 0 ? g.b : g.a;
+        const next = chooseNextEdge(G, nodeIdx, curEdge);
+        if (!next) break; // 복도 끝 (막다른 길)
+        curEdge = next.ei;
+        curT = next.startT;
+      }
+    }
+    return moved;
+
+  } else {
+    // ❌ 길 이탈 (진행 방향에 복도가 없음)
+    
+    // 좌표를 이동시키지 않고 현재 위치 고정
+    const now = Date.now();
+    if (!offPathStartTime) {
+      offPathStartTime = now;
+    } else if (now - offPathStartTime >= OFF_PATH_THRESHOLD_MS) {
+      // 2초 이상 이탈 지속 시 경고 출력
+      showMapWarningMessage("지도에 이상이 있습니다!");
+    }
+    return 0; // 이동 거리 0 처리
   }
-  return moved;
+}
+
+// ------------------------------------------
+// UI 경고 메시지 제어 헬퍼 함수
+// ------------------------------------------
+function showMapWarningMessage(msg) {
+  let alertBox = document.getElementById('map-alert');
+  if (!alertBox) {
+    alertBox = document.createElement('div');
+    alertBox.id = 'map-alert';
+    alertBox.style.cssText = `
+      position: fixed; top: 20px; left: 50%; transform: translateX(-50%);
+      background: rgba(220, 38, 38, 0.9); color: white; padding: 12px 20px;
+      border-radius: 8px; font-weight: bold; z-index: 9999; box-shadow: 0 4px 6px rgba(0,0,0,0.2);
+    `;
+    document.body.appendChild(alertBox);
+  }
+  alertBox.innerText = msg;
+  alertBox.style.display = 'block';
+}
+
+function hideMapWarningMessage() {
+  const alertBox = document.getElementById('map-alert');
+  if (alertBox) alertBox.style.display = 'none';
 }
 /* 복도 끝(막다른 길)에 닿아 더 나아갈 수 없는 상태를 알린다.
    여기서 진행방향을 목적지 쪽으로 강제 회전시키지 않는다 — 사용자가 바라보는
