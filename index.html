@@ -45,6 +45,8 @@
   #elevArrivedBtn{background:#0a6e5c; color:#fff}
   #relocBtn{background:#fff; color:#7c3aed; border-color:#7c3aed}
   #relocBtn.on{background:#7c3aed; color:#fff}
+  #tapStartBtn{background:#fff; color:#7c3aed; border-color:#7c3aed}
+  #tapStartBtn.on{background:#7c3aed; color:#fff}
   #dirPicker{display:flex; flex-direction:column; gap:6px}
   .dir-label{font-size:12.5px; font-weight:700; color:var(--ink-soft)}
   .dir-label span{font-weight:400; opacity:.75}
@@ -107,6 +109,7 @@
       <label for="startSel"><span class="dot red"></span>현재 위치</label>
       <select id="startSel"></select>
     </div>
+    <button id="tapStartBtn" type="button" title="지도를 탭해서 실제 현재 위치를 정확히 지정합니다">📍 지도에서 지정</button>
     <div class="field">
       <label for="endSel"><span class="dot green"></span>목적지 (다른 층도 선택 가능)</label>
       <select id="endSel"></select>
@@ -348,7 +351,7 @@ function runElevatorTransition(destFloor, destId){
 function handleFindClick(){
   if(elevatorBusy) return;
   if(!endFloor || !endId){ setStatus('목적지를 선택해 주세요.'); return; }
-  if(!startId){ setStatus('현재 위치를 먼저 선택해 주세요.'); return; }
+  if(!getStartPoint()){ setStatus('현재 위치를 먼저 선택하거나, "📍 지도에서 지정"으로 찍어 주세요.'); return; }
   if(endFloor === currentFloor){
     drawRoute(endId);
   } else {
@@ -356,7 +359,7 @@ function handleFindClick(){
     if(elevId){
       // 이 층의 엘리베이터까지 우선 경로 표시 → "이송 시작"으로 실제 걸어가면
       // 엘리베이터 근처에서 자동으로 층 전환 연출로 이어진다.
-      drawRoute(elevId, `<b>${L[startId].name}</b> → <b>${L[elevId].name}</b> (경유) → <b>${FLOORS_DATA[endFloor].label} ${L[endId] ? L[endId].name : ''}</b>`);
+      drawRoute(elevId, `<b>${getStartLabel()}</b> → <b>${L[elevId].name}</b> (경유) → <b>${FLOORS_DATA[endFloor].label} ${L[endId] ? L[endId].name : ''}</b>`);
     } else {
       runElevatorTransition(endFloor, endId);  // 이 층엔 엘리베이터가 태그돼있지 않아 즉시 시뮬레이션으로 대체
     }
@@ -508,17 +511,18 @@ let lastRoutePts = null;
 let lastRouteStartEdge=-1, lastRouteStartT=0;   // drawRoute가 실제로 계산한 경로의 진입 간선/진행률 — 이송 시작시 그대로 재사용
 function drawRoute(targetId, statusOverride){
   targetId = targetId || endId;
-  if(!startId||!targetId){ setStatus('현재 위치와 목적지를 모두 선택해 주세요.'); return; }
-  if(startId===targetId){ setStatus('현재 위치와 목적지가 같습니다.'); return; }
-  const A=px(L[startId]), B=px(L[targetId]);
+  const A = getStartPoint();
+  if(!A||!targetId){ setStatus('현재 위치와 목적지를 모두 선택해 주세요.'); return; }
+  if(!customStartPt && startId===targetId){ setStatus('현재 위치와 목적지가 같습니다.'); return; }
+  const B=px(L[targetId]);
   const pts=routePoints(A,B).filter((p,i,arr)=> i===0 ||
     Math.hypot(p.x-arr[i-1].x,p.y-arr[i-1].y)>2);
   const d = pts.map((p,i)=>`${i?'L':'M'}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
   $('routePath').setAttribute('d',d);  $('routeCasing').setAttribute('d',d);
   $('routePath').classList.add('on');  $('routeCasing').classList.add('on');
   placeMe(); placeDestAt(targetId);
-  setStatus(statusOverride || (`<b>${L[startId].name}</b> → <b>${L[targetId].name}</b> 경로 표시 중`
-    + ((!L[startId].set||!L[targetId].set)?' <span style="color:#c47f00">(＊ 미보정 좌표 포함 — 보정 모드에서 위치를 확정하세요)</span>':'')));
+  setStatus(statusOverride || (`<b>${getStartLabel()}</b> → <b>${L[targetId].name}</b> 경로 표시 중`
+    + ((!L[targetId].set || (startId && !customStartPt && !L[startId].set))?' <span style="color:#c47f00">(＊ 미보정 좌표 포함 — 보정 모드에서 위치를 확정하세요)</span>':'')));
   lastRoutePts = pts;
   // routePoints()가 방금 corridorPathBetween을 호출했으므로, 이 경로가 실제로 그래프에
   // 진입한 지점(edge/t)이 routeStartEdge/routeStartT에 남아있다 — 그대로 기억해둔다.
@@ -533,8 +537,19 @@ function clearRoute(){
   $('transportBar').style.display='none';
   stopTransport();
 }
+let customStartPt = null;   // 지도를 탭해서 직접 지정한 실제 현재 위치 (설정돼 있으면 startId보다 우선)
+let tapStartMode = false;
+function getStartPoint(){
+  if(customStartPt) return customStartPt;
+  return startId ? px(L[startId]) : null;
+}
+function getStartLabel(){
+  if(customStartPt) return '지정한 위치';
+  return (startId && L[startId]) ? L[startId].name : '';
+}
 function placeMe(){
-  const p=px(L[startId]);
+  const p=getStartPoint();
+  if(!p) return;
   $('meDot').style.display='';
   $('meDot').setAttribute('transform',`translate(${p.x},${p.y})`);
 }
@@ -1108,6 +1123,15 @@ function renderAll(){
 /* ── 일반 모드: 지도 클릭 → 가장 가까운 시설 선택 ── */
 overlay.addEventListener('click', e=>{
   const p=evtToImg(e);
+  if(tapStartMode){
+    customStartPt = p;
+    startId=''; $('startSel').value='';
+    endFloor=''; endId=''; $('endSel').value='';
+    clearRoute(); placeMe();
+    tapStartMode=false; $('tapStartBtn').classList.remove('on');
+    setStatus('현재 위치가 지정되었습니다. 이제 목적지를 선택하거나 지도에서 클릭하세요.');
+    return;
+  }
   if(relocMode && transportActive){
     // 추정 위치가 실제와 어긋났을 때, 이송 요원이 직접 현재 위치를 찍어 되돌린다.
     setCorridorPos(p);
@@ -1131,7 +1155,7 @@ overlay.addEventListener('click', e=>{
   }
   if(!best || best.d > Math.min(IW,IH)*0.08) return;   // 너무 먼 클릭 무시
   if(!endIdPending()){
-    startId=best.id; $('startSel').value=best.id;
+    startId=best.id; customStartPt=null; $('startSel').value=best.id;
     endFloor=''; endId=''; $('endSel').value='';
     clearRoute(); placeMe();
     setStatus(`현재 위치: <b>${L[best.id].name}</b> — 이제 목적지를 클릭하세요.`);
@@ -1141,19 +1165,25 @@ overlay.addEventListener('click', e=>{
     handleFindClick();
   }
 });
-function endIdPending(){ return startId && !(endFloor && endId); }
+function endIdPending(){ return !!getStartPoint() && !(endFloor && endId); }
 
 /* ── 이벤트 ── */
 $('findBtn').addEventListener('click', handleFindClick);
 $('resetBtn').addEventListener('click', ()=>{
-  startId=''; endFloor=''; endId='';
+  startId=''; customStartPt=null; endFloor=''; endId='';
   $('startSel').value=''; $('endSel').value='';
   clearRoute();
   $('meDot').style.display='none';
   setStatus('초기화되었습니다.');
 });
+$('tapStartBtn').addEventListener('click', ()=>{
+  tapStartMode=!tapStartMode;
+  $('tapStartBtn').classList.toggle('on', tapStartMode);
+  if(tapStartMode) setStatus('지도에서 <b>현재 실제 위치</b>를 눌러 주세요.');
+  else setStatus('취소되었습니다.');
+});
 $('startSel').addEventListener('change', e=>{
-  startId=e.target.value; endFloor=''; endId=''; $('endSel').value='';
+  startId=e.target.value; customStartPt=null; endFloor=''; endId=''; $('endSel').value='';
   clearRoute();
   if(startId) placeMe(); else $('meDot').style.display='none';
 });
