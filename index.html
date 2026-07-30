@@ -573,6 +573,7 @@ const DWELL_RADIUS_PX = 55;              // 목표가 아닌 엘리베이터로�
 const DWELL_MS = 3000;                   // 이 시간 이상 머무르면 그 엘리베이터로 목표 변경
 /* ── 복도 주행 파라미터 ── */
 const DIR_PERPENDICULAR_RAD = 12*Math.PI/180; // 앞/뒤 판정차가 이보다 작을 때(=복도와 거의 수직)만 직전 방향 유지
+const NODE_NEAR_PX = 18;                   // 교차로(분기 노드)로 "간주"하는 반경 — 이 안에서는 매 프레임 화살표 방향으로 갈래를 재확인
 const STUCK_CHECK_MS = 2500;               // 이 시간 동안 움직였는데도
 const STUCK_MIN_ADVANCE_PX = 10;           // 이만큼도 못 나아갔으면 "위치 추정이 틀렸다"고 보고 재추정
 /* ── 엘리베이터 하차 감지 (속도 기반) ── */
@@ -660,12 +661,49 @@ function chooseNextEdge(G, nodeIdx, fromEdge){
   if(!best || !list.length) return null;   // 막다른 길
   return best;
 }
+/* ════════ 교차로(분기 노드) 근처 실시간 재평가 ════════
+   [문제] 기존엔 curT가 정확히 0/1에 "도달하는 그 순간"에만 chooseNextEdge를 딱 한 번
+   호출해 다음 간선을 정하고, 일단 정해지면 그 간선을 완주할 때까지 다시 확인하지
+   않았다. 그 결과 교차로 도착 시점에 화살표가 아직 이전 방향(직진)에 더 가까웠다면
+   "직진"으로 확정되고, 그 직후 남쪽 등으로 방향을 틀어도 이미 직진 간선에 올라탄
+   뒤라 DIR_PERPENDICULAR_RAD(거의 수직일 때 직전 방향 유지) 규칙 때문에 다음
+   교차로를 만날 때까지 계속 직진을 고수해버렸다 — "분명 아래로 갈 수 있는데
+   못 간다"는 현상의 원인.
+   [해결] 교차로(분기 노드) 반경 NODE_NEAR_PX 이내에 있는 동안은 매 프레임 그
+   노드에 연결된 모든 갈래(현재 간선 포함)를 화살표 방향과 다시 비교해서 가장
+   가까운 쪽으로 즉시 갈아탄다. 노드 좌표 자체는 그대로이므로 간선을 바꿔도
+   화면상 위치는 튀지 않는다. */
+function reevaluateAtNode(G){
+  const g=edgeGeom(G,curEdge);
+  if(g.len<0.01) return;
+  const epsT = Math.min(0.4, NODE_NEAR_PX/g.len);
+  let nodeIdx=-1, sideT=null;
+  if(curT<=epsT){ nodeIdx=g.a; sideT=0; }
+  else if(curT>=1-epsT){ nodeIdx=g.b; sideT=1; }
+  if(nodeIdx<0) return;
+  const candidates=G.nodeEdges[nodeIdx]||[];
+  if(candidates.length<2) return;   // 진짜 교차로(갈래 2개 이상)가 아니면 재평가 불필요
+  let best=null;
+  for(const ei of candidates){
+    const gg=edgeGeom(G,ei);
+    const outAng=(gg.a===nodeIdx) ? gg.ang : gg.ang+Math.PI;
+    const score=Math.abs(angDiff(estHeadingRad, outAng));
+    if(!best || score<best.score) best={ei, startT:(gg.a===nodeIdx?0:1)};
+  }
+  if(!best) return;
+  if(best.ei!==curEdge || best.startT!==sideT){
+    curEdge=best.ei; curT=best.startT; lastDirSign=1;
+  } else {
+    curT=sideT;   // 같은 간선이 선택돼도 부동소수점 드리프트 없이 노드에 정확히 스냅
+  }
+}
 /* 복도를 따라 dist(px)만큼 전진. 실제로 이동한 거리를 반환. */
 function advanceAlongCorridor(dist){
   const G=getNavGraph();
   if(curEdge<0) return 0;
   let moved=0, guard=0;
   while(dist>0.01 && guard++<40){
+    reevaluateAtNode(G);   // 교차로 근처면 화살표 방향에 맞는 갈래로 즉시 전환
     const g=edgeGeom(G,curEdge);
     if(g.len<0.01) break;
     const sign=chooseDirOnEdge(g);
