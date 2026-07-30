@@ -595,6 +595,7 @@ const GPS_HEADING_GAIN = 0.18;       // 한 번의 GPS bearing으로 추정방�
 const GPS_OFFSET_MIN_SAMPLES = 3;    // 지도 북쪽 오프셋을 이만큼 학습해야 보정 시작
 
 let transportActive=false, transportRAF=null, lastFrameTime=null;
+let transportAnchorP=null;
 let estHeadingRad=0, traveledDist=0, legStartTime=0;
 let dwellCandidateId=null, dwellStartTime=0;
 let elevatorPhaseStart=0, elevExitScore=0, elevBaseline=0, elevBaseN=0;
@@ -796,6 +797,9 @@ function transportTick(now){
 
   const G=getNavGraph();
   let advanced=0;
+  if(walking && curEdge<0 && transportAnchorP){
+    setCorridorPos(transportAnchorP);
+  }
   if(walking && curEdge>=0){
     advanced=advanceAlongCorridor(TRANSPORT_SPEED_PXPS*dt);
     traveledDist+=advanced;
@@ -1003,6 +1007,7 @@ async function beginTransport(dirKey){
   $('dirPicker').style.display='none';
   transportActive=true;
   transportInElevator=false;
+  transportAnchorP = px(L[startId]);
   lastFrameTime=null;
   traveledDist=0;
   legStartTime=performance.now(); dwellCandidateId=null; dwellStartTime=0;
@@ -1010,11 +1015,8 @@ async function beginTransport(dirKey){
   // 전체 그래프에서 "가장 가까운 간선"을 다시 찾으면(setCorridorPos), 분기가 있는 복도에서
   // 실제 경로(Dijkstra)가 잡은 진입 지점과 다른 간선(예: 엘리베이터 쪽 분기)에 스냅될 수 있다.
   // drawRoute가 이미 계산해 둔 "그 경로의 진짜 진입 지점"을 그대로 써야 이 문제가 없다.
-  if(lastRouteStartEdge>=0 && lastRouteStartEdge<getNavGraph().edges.length){
-    curEdge=lastRouteStartEdge; curT=lastRouteStartT;
-  } else {
-    setCorridorPos(lastRoutePts[0]);
-  }
+  curEdge=-1;
+  curT=0;
   estHeadingRad = DIR_RAD[dirKey] != null ? DIR_RAD[dirKey]
                 : Math.atan2(lastRoutePts[1].y-lastRoutePts[0].y, lastRoutePts[1].x-lastRoutePts[0].x);
   routeHintRad=Math.atan2(lastRoutePts[1].y-lastRoutePts[0].y, lastRoutePts[1].x-lastRoutePts[0].x);
@@ -1062,6 +1064,7 @@ async function beginTransport(dirKey){
 function stopTransport(){
   transportActive=false;
   transportInElevator=false;
+  transportAnchorP=null;
   if(transportRAF) cancelAnimationFrame(transportRAF);
   transportRAF=null;
   if(gyroHandler){ window.removeEventListener('deviceorientation', gyroHandler, true); gyroHandler=null; }
