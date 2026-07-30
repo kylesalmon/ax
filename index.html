@@ -826,7 +826,7 @@ function transportTick(now){
   // 있으므로 시작하자마자 복도로 붙이면 순간이동처럼 보인다 — 실제로 밀기 시작하면
   // 복도 위 위치로 자연스럽게 넘어간다.
   const p = (traveledDist < 1 && preWalkAnchor) ? preWalkAnchor
-          : (corridorPos() || (startId && L[startId] ? px(L[startId]) : null));
+          : (corridorPos() || getStartPoint());
   if(!p){ transportRAF=requestAnimationFrame(transportTick); return; }
   $('meDot').style.display='';
   $('meDot').setAttribute('transform',`translate(${p.x},${p.y})`);
@@ -1016,9 +1016,9 @@ async function beginTransport(dirKey){
   stuckMoving=false; stuckWindowAdvance=0;
   // 경로를 그릴 때 확정된 진입 지점을 재사용한다. buildCorridorGraph()는 같은 복도 데이터에
   // 대해 항상 같은 순서로 간선을 만들기 때문에 간선 번호가 서로 호환된다.
-  preWalkAnchor = (startId && L[startId]) ? px(L[startId]) : null;
+  preWalkAnchor = getStartPoint();
   if(lastRouteStartEdge>=0){ curEdge=lastRouteStartEdge; curT=lastRouteStartT; }
-  else setCorridorPos(px(L[startId]));
+  else setCorridorPos(getStartPoint());
   estHeadingRad = DIR_RAD[dirKey] != null ? DIR_RAD[dirKey]
                 : Math.atan2(lastRoutePts[1].y-lastRoutePts[0].y, lastRoutePts[1].x-lastRoutePts[0].x);
   routeHintRad=Math.atan2(lastRoutePts[1].y-lastRoutePts[0].y, lastRoutePts[1].x-lastRoutePts[0].x);
