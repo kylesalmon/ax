@@ -414,7 +414,27 @@ function buildCorridorGraph(){
     edges.push([a,b]);
     nodeEdges[a].push(ei); nodeEdges[b].push(ei);
   };
-  for(let i=0;i<C.length-1;i++) link(idxOf(C[i]), idxOf(C[i+1]));
+  const idx = C.map(idxOf);          // 먼저 모든 복도 점을 노드로 등록
+  /* [중요] 어떤 노드가 다른 간선의 "내부"에 놓여 있으면 그 지점에서 간선을 쪼갠다.
+     예: 1F 복도는 중앙(D)에서 아래로 D→E(외래 엘리베이터 홀), D→F(병동 엘리베이터)로
+     두 번 뻗는데 둘이 같은 직선 위에 겹쳐 있다. 쪼개지 않으면 E는 간선이 하나뿐인
+     "막다른 점"이 되어, 중앙에서 남쪽으로 내려가다 E에서 완전히 멈춰버린다.
+     쪼개면 D-E-F로 이어져 E를 통과할 수 있다. */
+  const ON_EDGE_PX = 3;
+  for(let i=0;i<C.length-1;i++){
+    const a=idx[i], b=idx[i+1];
+    if(a===b) continue;
+    const mids=[];
+    for(let n=0;n<nodes.length;n++){
+      if(n===a||n===b) continue;
+      const r=projectOnSeg(nodes[n], nodes[a], nodes[b]);
+      if(r.d<=ON_EDGE_PX && r.t>0.001 && r.t<0.999) mids.push({n, t:r.t});
+    }
+    mids.sort((p,q)=>p.t-q.t);
+    let prev=a;
+    for(const m of mids){ link(prev, m.n); prev=m.n; }
+    link(prev, b);
+  }
   return {nodes, adj, edges, nodeEdges};
 }
 /* 주행용 그래프는 캐시해서 간선 번호를 안정적으로 유지한다.
@@ -574,6 +594,10 @@ const DWELL_MS = 3000;                   // 이 시간 이상 머무르면 그 �
 /* ── 복도 주행 파라미터 ── */
 const DIR_PERPENDICULAR_RAD = 12*Math.PI/180; // 앞/뒤 판정차가 이보다 작을 때(=복도와 거의 수직)만 직전 방향 유지
 const NODE_NEAR_PX = 18;                   // 교차로(분기 노드)로 "간주"하는 반경 — 이 안에서는 매 프레임 화살표 방향으로 갈래를 재확인
+const BRANCH_SWITCH_MARGIN_RAD = 15*Math.PI/180; // 다른 갈래가 이 각도만큼 뚜렷하게 더 맞을 때만 갈아탄다(교차로 떨림 방지)
+const TURN_SNAP_PX = 70;                    // 교차로를 지나친 뒤 꺾어도 이 거리 안이면 그 교차로로 되돌려 갈래를 잡아준다
+const TURN_OFF_AXIS_RAD = 55*Math.PI/180;   // 현재 복도 축에서 이 각도 이상 벗어나면 "옆길로 꺾었다"고 판단
+const TURN_BRANCH_TOL_RAD = 45*Math.PI/180; // 그때 화살표와 이 각도 안에 있는 갈래만 후보로 삼는다
 /* ── 엘리베이터 하차 감지 (속도 기반) ── */
 const ELEV_EXIT_SPEED_MIN = 1.8;      // 이 값 이상의 가속도 크기(m/s^2 근사)가 나오면 "걷기 시작"으로 봄
 const ELEV_EXIT_SUSTAIN_MS = 400;     // 이 값 이상을 이 시간 동안 지속해야 확정 (순간 튐 무시)
@@ -659,48 +683,77 @@ function chooseNextEdge(G, nodeIdx, fromEdge){
   return best;
 }
 /* ════════ 교차로(분기 노드) 근처 실시간 재평가 ════════
-   [문제] 기존엔 curT가 정확히 0/1에 "도달하는 그 순간"에만 chooseNextEdge를 딱 한 번
-   호출해 다음 간선을 정하고, 일단 정해지면 그 간선을 완주할 때까지 다시 확인하지
-   않았다. 그 결과 교차로 도착 시점에 화살표가 아직 이전 방향(직진)에 더 가까웠다면
-   "직진"으로 확정되고, 그 직후 남쪽 등으로 방향을 틀어도 이미 직진 간선에 올라탄
-   뒤라 DIR_PERPENDICULAR_RAD(거의 수직일 때 직전 방향 유지) 규칙 때문에 다음
-   교차로를 만날 때까지 계속 직진을 고수해버렸다 — "분명 아래로 갈 수 있는데
-   못 간다"는 현상의 원인.
-   [해결] 교차로(분기 노드) 반경 NODE_NEAR_PX 이내에 있는 동안은 매 프레임 그
-   노드에 연결된 모든 갈래(현재 간선 포함)를 화살표 방향과 다시 비교해서 가장
-   가까운 쪽으로 즉시 갈아탄다. 노드 좌표 자체는 그대로이므로 간선을 바꿔도
-   화면상 위치는 튀지 않는다. */
+   교차로 반경 NODE_NEAR_PX 이내에 있는 동안, 화살표 방향에 더 잘 맞는 다른 갈래가
+   있으면 그쪽으로 갈아탄다.
+   [중요] 예전에는 "같은 간선이 다시 선택되면 curT를 노드에 스냅(curT=sideT)"했는데,
+   이게 교차로에서 완전히 멈추는 원인이었다. 한 프레임 전진량(약 0.7px)이 교차로
+   반경(18px)보다 훨씬 작아서, 전진 → 다음 프레임에 노드로 되돌림 → 전진 → 되돌림이
+   무한 반복되며 교차로를 절대 벗어날 수 없었다. 이제 curT는 절대 되돌리지 않는다.
+   또 다른 갈래로 갈아타는 건 "뚜렷하게 더 나을 때"(BRANCH_SWITCH_MARGIN_RAD)만
+   허용해, 각도가 비슷한 갈래들 사이에서 매 프레임 흔들리는 것도 막는다. */
 function reevaluateAtNode(G){
   const g=edgeGeom(G,curEdge);
   if(g.len<0.01) return;
   const epsT = Math.min(0.4, NODE_NEAR_PX/g.len);
-  let nodeIdx=-1, sideT=null;
-  if(curT<=epsT){ nodeIdx=g.a; sideT=0; }
-  else if(curT>=1-epsT){ nodeIdx=g.b; sideT=1; }
+  let nodeIdx=-1;
+  if(curT<=epsT) nodeIdx=g.a;
+  else if(curT>=1-epsT) nodeIdx=g.b;
   if(nodeIdx<0) return;
   const candidates=G.nodeEdges[nodeIdx]||[];
   if(candidates.length<2) return;   // 진짜 교차로(갈래 2개 이상)가 아니면 재평가 불필요
+  // 현재 간선을 그대로 따라갈 때의 점수 (이 노드에서 뻗어나가는 방향 기준)
+  const curOut = (g.a===nodeIdx) ? g.ang : g.ang+Math.PI;
+  const curScore = Math.abs(angDiff(estHeadingRad, curOut));
   let best=null;
   for(const ei of candidates){
+    if(ei===curEdge) continue;
     const gg=edgeGeom(G,ei);
     const outAng=(gg.a===nodeIdx) ? gg.ang : gg.ang+Math.PI;
     const score=Math.abs(angDiff(estHeadingRad, outAng));
-    if(!best || score<best.score) best={ei, startT:(gg.a===nodeIdx?0:1)};
+    if(!best || score<best.score) best={ei, score, startT:(gg.a===nodeIdx?0:1)};
   }
-  if(!best) return;
-  if(best.ei!==curEdge || best.startT!==sideT){
+  if(best && best.score + BRANCH_SWITCH_MARGIN_RAD < curScore){
     curEdge=best.ei; curT=best.startT; lastDirSign=1;
-  } else {
-    curT=sideT;   // 같은 간선이 선택돼도 부동소수점 드리프트 없이 노드에 정확히 스냅
   }
 }
+/* ════════ 놓친 회전 보정 ════════
+   추측항법 위치에는 오차가 있어 교차로를 조금 지나친 뒤에 몸을 돌리는 일이 흔하다.
+   그런데 복도 중간에서는 갈래가 없으므로, 수직으로 몸을 돌려도 DIR_PERPENDICULAR_RAD
+   규칙에 따라 그냥 직진을 계속하게 된다 — "꺾었는데 계속 직진한다"는 증상.
+   현재 복도 축에서 크게 벗어난 방향을 보고 있다면, 뒤쪽 TURN_SNAP_PX 안에 있는
+   교차로로 되돌려 그 방향에 맞는 갈래에 올려준다. */
+function catchMissedTurn(G){
+  const g=edgeGeom(G,curEdge);
+  if(g.len<0.01) return false;
+  const offAxis=Math.min(Math.abs(angDiff(estHeadingRad,g.ang)),
+                         Math.abs(angDiff(estHeadingRad,g.ang+Math.PI)));
+  if(offAxis < TURN_OFF_AXIS_RAD) return false;   // 아직 이 복도 방향으로 가고 있다
+  const spots=[{node:g.a, dist:curT*g.len}, {node:g.b, dist:(1-curT)*g.len}];
+  let best=null;
+  for(const sp of spots){
+    if(sp.dist > TURN_SNAP_PX) continue;
+    for(const ei of (G.nodeEdges[sp.node]||[])){
+      if(ei===curEdge) continue;
+      const gg=edgeGeom(G,ei);
+      const outAng=(gg.a===sp.node) ? gg.ang : gg.ang+Math.PI;
+      const score=Math.abs(angDiff(estHeadingRad,outAng));
+      if(score > TURN_BRANCH_TOL_RAD) continue;
+      if(!best || score<best.score-0.01 || (Math.abs(score-best.score)<=0.01 && sp.dist<best.dist))
+        best={ei, score, dist:sp.dist, startT:(gg.a===sp.node?0:1)};
+    }
+  }
+  if(!best) return false;
+  curEdge=best.ei; curT=best.startT; lastDirSign=1;
+  return true;
+}
+
 /* 복도를 따라 dist(px)만큼 전진. 실제로 이동한 거리를 반환. */
 function advanceAlongCorridor(dist){
   const G=getNavGraph();
   if(curEdge<0) return 0;
   let moved=0, guard=0;
   while(dist>0.01 && guard++<40){
-    reevaluateAtNode(G);   // 교차로 근처면 화살표 방향에 맞는 갈래로 즉시 전환
+    if(!catchMissedTurn(G)) reevaluateAtNode(G);   // 놓친 회전 보정 → 교차로 갈래 재평가
     const g=edgeGeom(G,curEdge);
     if(g.len<0.01) break;
     const sign=chooseDirOnEdge(g);
