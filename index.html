@@ -574,8 +574,6 @@ const DWELL_MS = 3000;                   // 이 시간 이상 머무르면 그 �
 /* ── 복도 주행 파라미터 ── */
 const DIR_PERPENDICULAR_RAD = 12*Math.PI/180; // 앞/뒤 판정차가 이보다 작을 때(=복도와 거의 수직)만 직전 방향 유지
 const NODE_NEAR_PX = 18;                   // 교차로(분기 노드)로 "간주"하는 반경 — 이 안에서는 매 프레임 화살표 방향으로 갈래를 재확인
-const STUCK_CHECK_MS = 2500;               // 이 시간 동안 움직였는데도
-const STUCK_MIN_ADVANCE_PX = 10;           // 이만큼도 못 나아갔으면 "위치 추정이 틀렸다"고 보고 재추정
 /* ── 엘리베이터 하차 감지 (속도 기반) ── */
 const ELEV_EXIT_SPEED_MIN = 1.8;      // 이 값 이상의 가속도 크기(m/s^2 근사)가 나오면 "걷기 시작"으로 봄
 const ELEV_EXIT_SUSTAIN_MS = 400;     // 이 값 이상을 이 시간 동안 지속해야 확정 (순간 튐 무시)
@@ -605,7 +603,6 @@ let transportTargetId=null, transportNeedsElevator=false, transportInElevator=fa
 /* 복도 위 위치 상태 */
 let curEdge=-1, curT=0, lastDirSign=1, routeHintRad=null;
 let preWalkAnchor=null;   // 출발 시설의 실제 위치. 첫 이동이 감지될 때까지 여기에 점을 표시한다
-let stuckWindowStart=0, stuckWindowAdvance=0, stuckMoving=false;
 let relocMode=false;
 
 function angDiff(a,b){
@@ -658,7 +655,7 @@ function chooseNextEdge(G, nodeIdx, fromEdge){
     const score=Math.abs(angDiff(estHeadingRad, outAng));
     if(!best || score<best.score) best={ei, score, startT:(g.a===nodeIdx?0:1)};
   }
-  if(!best || !list.length) return null;   // 막다른 길
+  if(!best || !list.length) return null;   // 이어지는 갈래가 없음
   return best;
 }
 /* ════════ 교차로(분기 노드) 근처 실시간 재평가 ════════
@@ -717,21 +714,12 @@ function advanceAlongCorridor(dist){
       moved+=remain; dist-=remain;
       const nodeIdx = sign>0 ? g.b : g.a;
       const next=chooseNextEdge(G, nodeIdx, curEdge);
-      if(!next) break;              // 복도 끝(막다른 길) — 여기서 멈춤
+      if(!next) break;              // 더 이어지는 복도가 없으면 여기서 멈춤
       curEdge=next.ei; curT=next.startT;
     }
   }
   return moved;
 }
-/* 복도 끝(막다른 길)에 닿아 더 나아갈 수 없는 상태를 알린다.
-   여기서 진행방향을 목적지 쪽으로 강제 회전시키지 않는다 — 사용자가 바라보는
-   방향(화살표)이 유일한 판단 기준이므로, 시스템이 임의로 방향을 건드리지 않는다. */
-function notifyStuck(){
-  const G=getNavGraph();
-  if(curEdge<0) return false;
-  return true;
-}
-
 function updateHeadingArrow(){
   // 빨간점 위 삼각형이 "지금 시스템이 생각하는 진행방향". 실제와 다르면 바로 눈에 띈다.
   const deg=estHeadingRad*180/Math.PI + 90;   // 화살표 원본이 위(북)를 향해 그려져 있으므로 +90
@@ -768,18 +756,6 @@ function transportTick(now){
   // bearing으로 보정하던 코드는 완전히 제거했다 — 오직 onDeviceOrientation()의
   // 나침반 센서값만 estHeadingRad를 바꾼다. 즉, 화면의 화살표 = 점이 실제로
   // 따르는 방향이 항상 100% 일치한다.
-
-  // 움직이고 있는데 전혀 나아가지 못하면(막다른 길 등) 위치 추정이 틀린 것으로 보고 재추정
-  if(walking){
-    if(!stuckMoving){ stuckMoving=true; stuckWindowStart=now; stuckWindowAdvance=0; }
-    stuckWindowAdvance+=advanced;
-    if(now-stuckWindowStart>=STUCK_CHECK_MS){
-      if(stuckWindowAdvance<STUCK_MIN_ADVANCE_PX && notifyStuck()){
-        setStatus('⚠ 복도 끝에 도달해 더 진행할 수 없습니다. 실제 진행 방향으로 몸을 돌리거나, <b>📍 위치 재설정</b>으로 현재 위치를 찍어 주세요.');
-      }
-      stuckWindowStart=now; stuckWindowAdvance=0;
-    }
-  } else { stuckMoving=false; }
 
   // 폴백은 절대 지도 중앙이 아니어야 한다(중앙 순간이동의 원인). 출발 시설 위치를 쓴다.
   // 아직 한 걸음도 움직이지 않았으면 시설 위치에 그대로 둔다. 시설은 복도에서 떨어져
@@ -873,7 +849,6 @@ function completeElevatorArrival(){
   lastFrameTime=null;
   traveledDist=0;
   legStartTime=performance.now(); dwellCandidateId=null; dwellStartTime=0;
-  stuckMoving=false;
   isMoving=false; lastMotionTime=0; motionEnergy=0; motionAboveSince=0;
   $('meDot').style.display='';
   $('meDot').setAttribute('transform',`translate(${p.x},${p.y})`);
@@ -991,7 +966,6 @@ async function beginTransport(dirKey){
   lastFrameTime=null;
   traveledDist=0;
   legStartTime=performance.now(); dwellCandidateId=null; dwellStartTime=0;
-  stuckMoving=false; stuckWindowAdvance=0;
   // 경로를 그릴 때 확정된 진입 지점을 재사용한다. buildCorridorGraph()는 같은 복도 데이터에
   // 대해 항상 같은 순서로 간선을 만들기 때문에 간선 번호가 서로 호환된다.
   preWalkAnchor = getStartPoint();
@@ -1106,7 +1080,6 @@ overlay.addEventListener('click', e=>{
       updateRouteLineFrom(q, px(L[transportTargetId]));
       // 진행방향은 사용자가 실제로 향한 쪽을 그대로 유지한다(경로 방향으로 덮어쓰지 않음)
       traveledDist=0; legStartTime=performance.now();
-      stuckMoving=false; stuckWindowAdvance=0;
       preWalkAnchor=null;   // 수동 보정 후에는 곧바로 복도 위 위치를 사용
       setStatus('위치를 다시 맞췄습니다. 계속 이동해 주세요.');
     }
